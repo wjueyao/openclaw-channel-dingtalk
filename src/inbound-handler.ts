@@ -461,6 +461,10 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     // Card cache miss: prefix already contains "[引用了机器人的回复]", keep as-is.
   }
 
+  const inboundText =
+    mediaPath && /<media:[^>]+>/.test(content.text)
+      ? `${content.text}\n[media_path: ${mediaPath}]\n[media_type: ${mediaType || "unknown"}]`
+      : content.text;
   const envelopeOptions = rt.channel.reply.resolveEnvelopeFormatOptions(cfg);
   const previousTimestamp = rt.channel.session.readSessionUpdatedAt({
     storePath,
@@ -485,7 +489,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     channel: "DingTalk",
     from: fromLabel,
     timestamp: data.createAt,
-    body: content.text,
+    body: inboundText,
     chatType: isDirect ? "direct" : "group",
     sender: { name: senderName, id: senderId },
     previousTimestamp,
@@ -494,8 +498,8 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
   const ctx = rt.channel.reply.finalizeInboundContext({
     Body: body,
-    RawBody: content.text,
-    CommandBody: content.text,
+    RawBody: inboundText,
+    CommandBody: inboundText,
     From: to,
     To: to,
     SessionKey: route.sessionKey,
