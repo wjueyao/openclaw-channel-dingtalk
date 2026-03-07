@@ -166,6 +166,7 @@ export interface DingTalkInboundMessage {
       content?: {
         text?: string;
         downloadCode?: string;
+        biz_custom_action_url?: string;
         richText?: Array<{
           msgType?: string;
           type?: string;
@@ -184,6 +185,7 @@ export interface DingTalkInboundMessage {
     recognition?: string;
     spaceId?: string;
     fileId?: string;
+    biz_custom_action_url?: string;
     richText?: Array<{
       type: string;
       text?: string;
@@ -224,6 +226,9 @@ export interface QuotedInfo {
   mediaType?: string;
   isQuotedFile?: boolean;
   isQuotedCard?: boolean;
+  isQuotedDocCard?: boolean;
+  docSpaceId?: string;
+  docFileId?: string;
   cardCreatedAt?: number;
   processQueryKey?: string;
   fileCreatedAt?: number;
@@ -238,6 +243,8 @@ export interface MessageContent {
   mediaPath?: string;
   mediaType?: string;
   messageType: string;
+  docSpaceId?: string;
+  docFileId?: string;
   quoted?: QuotedInfo;
 }
 

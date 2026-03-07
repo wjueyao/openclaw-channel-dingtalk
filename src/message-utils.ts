@@ -1,5 +1,35 @@
 import type { DingTalkInboundMessage, MessageContent, QuotedInfo, SendMessageOptions } from "./types";
 
+interface DingTalkDocMeta {
+  spaceId: string;
+  fileId: string;
+}
+
+function parseBizCustomActionUrl(url: string | undefined): DingTalkDocMeta | null {
+  if (!url || typeof url !== "string") {
+    return null;
+  }
+
+  const queryIndex = url.indexOf("?");
+  if (queryIndex < 0 || queryIndex === url.length - 1) {
+    return null;
+  }
+
+  try {
+    const params = new URLSearchParams(url.slice(queryIndex + 1));
+    const route = params.get("route");
+    const type = params.get("type");
+    const spaceId = params.get("spaceId");
+    const fileId = params.get("fileId");
+    if (route !== "previewDentry" || type !== "file" || !spaceId || !fileId) {
+      return null;
+    }
+    return { spaceId, fileId };
+  } catch {
+    return null;
+  }
+}
+
 function extractRichTextQuoteParts(
   richText: Array<Record<string, any>> | undefined,
 ): { summary: string; pictureDownloadCode?: string } | null {
@@ -118,11 +148,22 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
       }
 
       if (repliedMsgType === "interactiveCard") {
+        const isBotCard = repliedMsg.senderId === data.chatbotUserId;
+        if (isBotCard) {
+          return {
+            prefix: "[引用了机器人的回复]\n\n",
+            isQuotedCard: true,
+            cardCreatedAt: repliedMsg.createdAt,
+            processQueryKey: data.originalProcessQueryKey,
+            msgId: repliedMsg.msgId,
+          };
+        }
+
         return {
-          prefix: "[引用了机器人的回复]\n\n",
-          isQuotedCard: true,
-          cardCreatedAt: repliedMsg.createdAt,
-          processQueryKey: data.originalProcessQueryKey,
+          prefix: "[引用了钉钉文档]\n\n",
+          isQuotedDocCard: true,
+          fileCreatedAt: repliedMsg.createdAt,
+          msgId: repliedMsg.msgId,
         };
       }
 
@@ -228,6 +269,24 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
       mediaPath: data.content?.downloadCode,
       mediaType: "file",
       messageType: "file",
+    };
+  }
+
+  if (msgtype === "interactiveCard") {
+    const docMeta = parseBizCustomActionUrl(data.content?.biz_custom_action_url);
+    if (docMeta) {
+      return {
+        text: "[钉钉文档]\n\n",
+        messageType: "interactiveCardFile",
+        docSpaceId: docMeta.spaceId,
+        docFileId: docMeta.fileId,
+        quoted: quoted ?? undefined,
+      };
+    }
+    return {
+      text: data.text?.content?.trim() || "[interactiveCard消息]",
+      messageType: msgtype,
+      quoted: quoted ?? undefined,
     };
   }
 
