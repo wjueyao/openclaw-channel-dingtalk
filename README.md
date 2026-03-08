@@ -735,6 +735,8 @@ openclaw logs | grep "\[ErrorPayload\]"
 
 ## 开发指南
 
+准备提交 issue 或 PR 时，请先阅读贡献指南：英文版见 [`CONTRIBUTING.md`](CONTRIBUTING.md)，中文版见 [`CONTRIBUTING.zh-CN.md`](CONTRIBUTING.zh-CN.md)。
+
 ### 首次设置
 
 1. 克隆仓库并安装依赖
