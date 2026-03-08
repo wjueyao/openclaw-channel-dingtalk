@@ -903,4 +903,4 @@ pnpm test:coverage
 
 ## 许可
 
-MIT
+[MIT](LICENSE)
