@@ -12,7 +12,7 @@ const ipv4OnlyHttpsAgent = new https.Agent({ family: 4 });
 const DINGTALK_API = "https://api.dingtalk.com";
 const DINGTALK_OAPI = "https://oapi.dingtalk.com";
 
-const MATCH_WINDOW_MS = 5000;
+const MATCH_WINDOW_MS = 10_000;
 const MAX_PAGES = 3;
 const PAGE_SIZE = 50;
 
@@ -168,7 +168,9 @@ export async function findFileByTimestamp(
     let nextToken: string | undefined;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-        const body: Record<string, any> = { option: { maxResults: PAGE_SIZE } };
+        const body: Record<string, any> = {
+            option: { maxResults: PAGE_SIZE },
+        };
         if (nextToken) {
             body.option.nextToken = nextToken;
         }
@@ -182,12 +184,14 @@ export async function findFileByTimestamp(
         const data = resp.data as Record<string, any>;
         const dentries = (data.dentries || []) as Array<Record<string, any>>;
 
+        let lastFileTime: number | undefined;
         for (const entry of dentries) {
             if (entry.type !== "FILE" || !entry.createTime) {
                 continue;
             }
             try {
                 const fileTime = parseDingTalkFileTime(entry.createTime as string);
+                lastFileTime = fileTime;
                 const delta = Math.abs(fileTime - createdAt);
                 if (delta <= MATCH_WINDOW_MS && delta < bestDelta) {
                     bestDelta = delta;
@@ -198,7 +202,10 @@ export async function findFileByTimestamp(
             }
         }
 
-        if (bestMatch && bestDelta < 1000) {
+        if (lastFileTime !== undefined && lastFileTime < createdAt - MATCH_WINDOW_MS) {
+            log?.debug?.(
+                `[DingTalk][QuotedFile] Stop at page ${page + 1}: last file ${lastFileTime} already past match window (target=${createdAt} window=${MATCH_WINDOW_MS}ms)`,
+            );
             break;
         }
 
