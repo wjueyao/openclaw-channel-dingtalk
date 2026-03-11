@@ -116,3 +116,44 @@ export function resolveAtAgents(
     mainAgentId,
   };
 }
+
+/**
+ * Extract agent IDs mentioned in a reply text
+ *
+ * Used to detect when an agent @mentions another agent in their reply,
+ * enabling agent-to-agent collaboration.
+ *
+ * @param text - The reply text to scan for @mentions
+ * @param cfg - OpenClaw configuration
+ * @param excludeAgentIds - Agent IDs to exclude (e.g., the sender itself)
+ * @returns Array of matched agent IDs
+ */
+export function extractAgentMentionsFromText(
+  text: string,
+  cfg: OpenClawConfig,
+  excludeAgentIds: string[] = [],
+): string[] {
+  const agents = cfg?.agents?.list as AgentConfig[] | undefined;
+  if (!agents || agents.length === 0 || !text) {
+    return [];
+  }
+
+  const mentionedAgentIds: string[] = [];
+
+  // Pattern: @name or @Name (word boundary after @)
+  const mentionPattern = /@([^\s@]+)/g;
+  let match;
+
+  while ((match = mentionPattern.exec(text)) !== null) {
+    const mentionName = match[1].trim();
+    const agentMatch = matchAtName(mentionName, agents);
+
+    if (agentMatch && !excludeAgentIds.includes(agentMatch.agentId)) {
+      if (!mentionedAgentIds.includes(agentMatch.agentId)) {
+        mentionedAgentIds.push(agentMatch.agentId);
+      }
+    }
+  }
+
+  return mentionedAgentIds;
+}

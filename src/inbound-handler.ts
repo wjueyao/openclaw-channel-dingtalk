@@ -1,7 +1,7 @@
 import axios from "axios";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { normalizeAllowFrom, isSenderAllowed, isSenderGroupAllowed } from "./access-control";
-import { resolveAtAgents } from "./agent-name-matcher";
+import { resolveAtAgents, extractAgentMentionsFromText } from "./agent-name-matcher";
 import { getAccessToken } from "./auth";
 import {
   createAICard,
@@ -368,6 +368,11 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   log?.info?.(
     `[DingTalk] Sub-agent check: isGroup=${isGroup} atMentions=${JSON.stringify(atMentions)} agentsList=${cfg.agents?.list?.length || 0}`,
   );
+
+  // Agent 协作配置
+  const MAX_COLLABORATION_ROUNDS = 5;
+  const collaborationTimeout = 60000; // 60 seconds
+
   if (isGroup && atMentions.length > 0 && cfg.agents?.list && cfg.agents.list.length > 0) {
     const { matchedAgents, unmatchedNames } = resolveAtAgents(atMentions, cfg);
     log?.info?.(
@@ -375,32 +380,99 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     );
 
     if (matchedAgents.length > 0) {
-      // 有匹配的 sub-agent，并行处理
-      log?.debug?.(
-        `[DingTalk] Sub-agent matched: agents=${matchedAgents.map((a) => a.agentId).join(",")} groupId=${groupId}`,
+      // 有匹配的 sub-agent，开始协作处理
+      log?.info?.(
+        `[DingTalk] Starting agent collaboration: agents=${matchedAgents.map((a) => a.agentId).join(",")} groupId=${groupId}`,
       );
 
-      // 并行处理所有匹配的 agent
-      const tasks = matchedAgents.map((agentMatch) =>
-        processSubAgentMessage({
-          cfg,
-          accountId,
-          data,
-          content,
-          agentMatch,
-          baseRoute: route,
-          dingtalkConfig,
-          sessionWebhook,
-          log,
-        }).catch((error) => {
-          log?.error?.(
-            `[DingTalk] Sub-agent ${agentMatch.agentId} failed: ${error instanceof Error ? error.message : String(error)}`,
+      // 追踪已参与的 agent，防止重复调用
+      const participatedAgents = new Set<string>();
+
+      // 当前轮次要处理的 agent 列表
+      let agentsToProcess = [...matchedAgents];
+      let round = 0;
+      const startTime = Date.now();
+
+      // 循环处理 agent 链式调用
+      while (agentsToProcess.length > 0 && round < MAX_COLLABORATION_ROUNDS) {
+        // 检查超时
+        if (Date.now() - startTime > collaborationTimeout) {
+          log?.warn?.(`[DingTalk] Agent collaboration timeout after ${round} rounds`);
+          break;
+        }
+
+        round++;
+        log?.info?.(
+          `[DingTalk] Collaboration round ${round}: processing ${agentsToProcess.length} agent(s)`,
+        );
+
+        // 记录本轮参与的 agent
+        for (const agent of agentsToProcess) {
+          participatedAgents.add(agent.agentId);
+        }
+
+        // 并行处理当前轮的所有 agent
+        const roundResults = await Promise.allSettled(
+          agentsToProcess.map((agentMatch) =>
+            processSubAgentMessage({
+              cfg,
+              accountId,
+              data,
+              content,
+              agentMatch,
+              baseRoute: route,
+              dingtalkConfig,
+              sessionWebhook,
+              participatedAgents: Array.from(participatedAgents),
+              log,
+            }).catch((error) => {
+              log?.error?.(
+                `[DingTalk] Sub-agent ${agentMatch.agentId} failed: ${error instanceof Error ? error.message : String(error)}`,
+              );
+              return [];
+            }),
+          ),
+        );
+
+        // 收集下一轮要处理的 agent（被当前轮 agent @ 的）
+        const nextRoundAgentIds: string[] = [];
+        for (const result of roundResults) {
+          if (result.status === "fulfilled" && Array.isArray(result.value)) {
+            for (const agentId of result.value) {
+              if (!participatedAgents.has(agentId) && !nextRoundAgentIds.includes(agentId)) {
+                nextRoundAgentIds.push(agentId);
+              }
+            }
+          }
+        }
+
+        // 准备下一轮：将 agent ID 转换为 AgentNameMatch
+        const agents = cfg.agents?.list as Array<{ id: string; name?: string }> | undefined;
+        const nextAgents: AgentNameMatch[] = [];
+        for (const agentId of nextRoundAgentIds) {
+          const agentConfig = agents?.find((a) => a.id === agentId);
+          if (agentConfig) {
+            nextAgents.push({
+              agentId,
+              matchSource: "id",
+              matchedName: agentConfig.name || agentId,
+            });
+          }
+        }
+        agentsToProcess = nextAgents;
+
+        if (agentsToProcess.length > 0) {
+          log?.info?.(
+            `[DingTalk] Next round agents: ${agentsToProcess.map((a) => a.agentId).join(", ")}`,
           );
-          return null;
-        }),
-      );
+        }
+      }
 
-      await Promise.allSettled(tasks);
+      if (round >= MAX_COLLABORATION_ROUNDS) {
+        log?.warn?.(
+          `[DingTalk] Agent collaboration reached max rounds (${MAX_COLLABORATION_ROUNDS})`,
+        );
+      }
 
       // 如果有未匹配的名字，发送提示
       if (unmatchedNames.length > 0) {
@@ -1347,6 +1419,7 @@ function buildAgentSpecificSessionKey(params: {
 
 /**
  * Process a single sub-agent message
+ * Returns list of agent IDs mentioned in the reply (for chaining)
  */
 async function processSubAgentMessage(params: {
   cfg: OpenClawConfig;
@@ -1357,8 +1430,9 @@ async function processSubAgentMessage(params: {
   baseRoute: { agentId: string; sessionKey: string; mainSessionKey: string };
   dingtalkConfig: DingTalkConfig;
   sessionWebhook: string;
+  participatedAgents?: string[]; // Agents already in this conversation
   log?: any;
-}): Promise<void> {
+}): Promise<string[]> {
   const {
     cfg,
     accountId,
@@ -1368,6 +1442,7 @@ async function processSubAgentMessage(params: {
     baseRoute,
     dingtalkConfig,
     sessionWebhook,
+    participatedAgents = [],
     log,
   } = params;
 
@@ -1471,6 +1546,10 @@ async function processSubAgentMessage(params: {
 
   // === 7. Dispatch reply ===
   const releaseSessionLock = await acquireSessionLock(agentSessionKey);
+
+  // Collect reply text for agent mention detection
+  let fullReplyText = "";
+
   try {
     // Send thinking message
     if (dingtalkConfig.showThinking !== false) {
@@ -1506,6 +1585,9 @@ async function processSubAgentMessage(params: {
               return;
             }
 
+            // Collect reply text for mention detection
+            fullReplyText += textToSend;
+
             // responsePrefix 已自动添加前缀，无需再手动添加
             await sendBySession(dingtalkConfig, sessionWebhook, textToSend, {
               atUserId: isGroup ? senderId : null,
@@ -1525,4 +1607,17 @@ async function processSubAgentMessage(params: {
   } finally {
     releaseSessionLock();
   }
+
+  // === 8. Extract agent mentions from reply ===
+  // Exclude agents that already participated in this conversation
+  const excludeIds = [...participatedAgents, agentMatch.agentId];
+  const mentionedAgentIds = extractAgentMentionsFromText(fullReplyText, cfg, excludeIds);
+
+  if (mentionedAgentIds.length > 0) {
+    log?.info?.(
+      `[DingTalk] Agent ${agentMatch.agentId} mentioned other agents: ${mentionedAgentIds.join(", ")}`,
+    );
+  }
+
+  return mentionedAgentIds;
 }
