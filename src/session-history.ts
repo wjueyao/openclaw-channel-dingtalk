@@ -116,13 +116,31 @@ export function getGroupHistoryContext(
       return "";
     }
 
-    let context = "\n\n--- 群聊最近消息 ---\n";
+    let context = "\n\n--- 群聊历史 ---\n";
     for (const msg of messages.slice(-10)) {
-      const sender = msg.senderName || "某人";
-      const content = msg.content.slice(0, 200);
-      context += `${sender}: ${content}\n`;
+      // 获取文本内容
+      const contentText =
+        typeof msg.content === "string"
+          ? msg.content
+          : Array.isArray(msg.content)
+            ? msg.content.map((c) => c.text || "").join("")
+            : "";
+
+      // 尝试从消息内容中提取 agent 身份标识 [xxx]
+      const agentMatch = contentText.match(/^\[([^\]]+)\]\s*/);
+      if (agentMatch) {
+        // 消息已经有身份标识前缀
+        const agentName = agentMatch[1];
+        const content = contentText.replace(agentMatch[0], "").slice(0, 200);
+        context += `[${agentName}] ${content}\n`;
+      } else {
+        // 普通用户消息
+        const sender = msg.senderName || "用户";
+        const content = contentText.slice(0, 200);
+        context += `[${sender}] ${content}\n`;
+      }
     }
-    context += "--- 以上为历史消息 ---\n\n";
+    context += "--- 历史结束 ---\n\n";
     return context;
   } catch (error) {
     log?.warn?.(`[DingTalk] Failed to get group history context: ${error}`);
