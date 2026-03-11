@@ -365,12 +365,12 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   // ==================== @Sub-Agent 处理 ====================
   // 检测是否有 @sub-agent 需要处理
   const atMentions = content.atMentions || [];
-  log?.debug?.(
+  log?.info?.(
     `[DingTalk] Sub-agent check: isGroup=${isGroup} atMentions=${JSON.stringify(atMentions)} agentsList=${cfg.agents?.list?.length || 0}`,
   );
   if (isGroup && atMentions.length > 0 && cfg.agents?.list && cfg.agents.list.length > 0) {
     const { matchedAgents, unmatchedNames } = resolveAtAgents(atMentions, cfg);
-    log?.debug?.(
+    log?.info?.(
       `[DingTalk] Sub-agent resolve: matched=${matchedAgents.map((a) => a.agentId).join(",")} unmatched=${unmatchedNames.join(",")}`,
     );
 
