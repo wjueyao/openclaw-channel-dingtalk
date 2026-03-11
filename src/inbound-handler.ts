@@ -1,7 +1,11 @@
 import axios from "axios";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { normalizeAllowFrom, isSenderAllowed, isSenderGroupAllowed } from "./access-control";
-import { resolveAtAgents, extractAgentMentionsFromText } from "./agent-name-matcher";
+import {
+  resolveAtAgents,
+  extractAgentMentionsFromText,
+  formatAgentList,
+} from "./agent-name-matcher";
 import { getAccessToken } from "./auth";
 import {
   createAICard,
@@ -241,6 +245,21 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   const senderName = data.senderNick || "Unknown";
   const groupId = data.conversationId;
   const groupName = data.conversationTitle || "Group";
+
+  // ==================== /agents 命令处理 ====================
+  if (content.text.trim() === "/agents" || content.text.trim() === "/专家") {
+    const agentList = formatAgentList(cfg);
+    try {
+      await sendBySession(dingtalkConfig, sessionWebhook, agentList, {
+        atUserId: senderId,
+        log,
+      });
+    } catch (err: any) {
+      log?.debug?.(`[DingTalk] Failed to send agent list: ${err.message}`);
+    }
+    return;
+  }
+  // ==================== End /agents 命令处理 ====================
 
   // Register original peer IDs to preserve case-sensitive DingTalk conversation IDs.
   if (groupId) {

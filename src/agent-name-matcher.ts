@@ -157,3 +157,36 @@ export function extractAgentMentionsFromText(
 
   return mentionedAgentIds;
 }
+
+/**
+ * Format agent list for display
+ *
+ * Returns a formatted string listing all available agents.
+ * Used for /agents command.
+ *
+ * @param cfg - OpenClaw configuration
+ * @returns Formatted agent list string
+ */
+export function formatAgentList(cfg: OpenClawConfig): string {
+  const agents = cfg?.agents?.list as AgentConfig[] | undefined;
+  const mainAgentId = getMainAgentId(agents);
+
+  if (!agents || agents.length === 0) {
+    return "当前没有配置专家助手。";
+  }
+
+  const lines: string[] = ["🤖 **可用专家助手**\n"];
+
+  for (const agent of agents) {
+    const isMain = agent.id === mainAgentId;
+    const displayName = agent.name || agent.id;
+    const badge = isMain ? " [默认]" : "";
+    const mentionHint = `@${agent.id}`;
+    lines.push(`• **${displayName}**${badge} - 使用 \`${mentionHint}\` 唤起`);
+  }
+
+  lines.push("\n💡 **使用方法**：在消息中 `@专家名` 即可让对应专家回复");
+  lines.push("📝 **协作模式**：专家之间可以相互 @ 协作讨论");
+
+  return lines.join("\n");
+}
