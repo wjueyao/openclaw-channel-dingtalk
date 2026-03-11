@@ -1408,6 +1408,9 @@ async function processSubAgentMessage(params: {
   const contextHint = `[你被 @ 为"${agentMatch.matchedName}"]\n\n`;
   const inboundText = contextHint + historyContext + content.text;
 
+  // Agent 身份前缀，用于在群聊历史中标识消息来源
+  const agentIdentityPrefix = `[${agentMatch.matchedName}] `;
+
   // === 5. Build envelope and ctx ===
   const envelopeOptions = rt.channel.reply.resolveEnvelopeFormatOptions(cfg);
   const previousTimestamp = rt.channel.session.readSessionUpdatedAt({
@@ -1490,7 +1493,7 @@ async function processSubAgentMessage(params: {
       ctx,
       cfg,
       dispatcherOptions: {
-        responsePrefix: "",
+        responsePrefix: agentIdentityPrefix,
         deliver: async (payload: any, info?: { kind: string }) => {
           try {
             const textToSend = payload.markdown || payload.text;
@@ -1503,7 +1506,10 @@ async function processSubAgentMessage(params: {
               return;
             }
 
-            await sendBySession(dingtalkConfig, sessionWebhook, textToSend, {
+            // 添加 agent 身份前缀
+            const finalText = agentIdentityPrefix + textToSend;
+
+            await sendBySession(dingtalkConfig, sessionWebhook, finalText, {
               atUserId: isGroup ? senderId : null,
               log,
             });
