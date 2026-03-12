@@ -71,16 +71,13 @@ function matchAtName(atName: string, agents: AgentConfig[]): AgentNameMatch | nu
  * @param atMentions - List of @mentions extracted from message
  * @param cfg - OpenClaw configuration
  * @param atUserDingtalkIds - dingtalkIds from webhook atUsers field (real users selected via @picker)
- * @returns Matched agents, unmatched names, and main agent ID
+ * @returns Matched agents, unmatched names, main agent ID, and whether there are invalid agent names
  *
  * @remarks
  * Exclusion logic for unmatched @mentions:
- * - If mention.userId is set (from richText), it's a real user → excluded from unmatchedNames
- * - If atUserDingtalkIds is non-empty, some @mentions are real users but we don't know which
- *   → we still add to unmatchedNames but caller can use atUserDingtalkIds.length for heuristics
- *
- * Limitation: For text messages, we cannot map dingtalkId to display names, so we cannot
- * definitively determine which specific @mention corresponds to a real user vs an agent name.
+ * - If mention.userId is set (from richText or text.atUsers), it's a real user → excluded from unmatchedNames
+ * - hasInvalidAgentNames is true when unmatchedNames.length > atUserDingtalkIds.length
+ *   (meaning some @mentions are neither agents nor known real users)
  */
 export function resolveAtAgents(
   atMentions: AtMention[],
@@ -92,6 +89,8 @@ export function resolveAtAgents(
   mainAgentId: string;
   /** Count of @mentions that are likely real users (from atUserDingtalkIds) */
   realUserCount: number;
+  /** Whether there are invalid agent names (unmatchedNames > realUserCount) */
+  hasInvalidAgentNames: boolean;
 } {
   const agents = cfg?.agents?.list as AgentConfig[] | undefined;
   const mainAgentId = getMainAgentId(agents);
@@ -102,6 +101,7 @@ export function resolveAtAgents(
       unmatchedNames: [],
       mainAgentId,
       realUserCount: 0,
+      hasInvalidAgentNames: false,
     };
   }
 
@@ -117,7 +117,7 @@ export function resolveAtAgents(
         matchedAgents.push(match);
       }
     } else {
-      // Exclude @real users (those with userId are real users from richText)
+      // Exclude @real users (those with userId are real users from richText or text.atUsers)
       if (!mention.userId) {
         unmatchedNames.push(mention.name);
       }
@@ -127,11 +127,14 @@ export function resolveAtAgents(
   // Count real users from atUserDingtalkIds
   // These are real DingTalk users selected via @picker, but we don't know which names they correspond to
   const realUserCount = atUserDingtalkIds?.length || 0;
+  // If unmatchedNames.length > realUserCount, there are invalid agent names
+  const hasInvalidAgentNames = unmatchedNames.length > realUserCount;
 
   return {
     matchedAgents,
     unmatchedNames,
     mainAgentId,
     realUserCount,
+    hasInvalidAgentNames,
   };
 }
