@@ -1393,6 +1393,20 @@ function buildAgentSpecificSessionKey(params: {
 
 /**
  * Process a single sub-agent message
+ *
+ * @technical-debt
+ * This function duplicates parts of the main message handling logic.
+ * Consider refactoring handleDingTalkMessage to accept agentId + responsePrefix
+ * parameters to share the same code path.
+ *
+ * Missing features compared to main handler:
+ * - AI Card mode support (falls back to sendBySession)
+ * - /learn command filtering (learn commands go to main agent)
+ * - Feedback learning integration
+ * - Quoted message media download (only direct media is downloaded)
+ *
+ * TODO: Refactor to reuse main handler with agent-specific parameters.
+ * See: https://github.com/wjueyao/openclaw/issues/XXX
  */
 async function processSubAgentMessage(params: {
   cfg: OpenClawConfig;
@@ -1469,14 +1483,25 @@ async function processSubAgentMessage(params: {
     historyContext = getGroupHistoryContext(mainStorePath, baseRoute.sessionKey, 20, log);
   }
 
-  // === 4. Build message context with @ hint and history ===
+  // === 4. Download media if present ===
+  let mediaPath: string | undefined;
+  let mediaType: string | undefined;
+  if (content.mediaPath && dingtalkConfig.robotCode) {
+    const media = await downloadMedia(dingtalkConfig, content.mediaPath, log);
+    if (media) {
+      mediaPath = media.path;
+      mediaType = media.mimeType;
+    }
+  }
+
+  // === 5. Build message context with @ hint and history ===
   const contextHint = `[你被 @ 为"${agentMatch.matchedName}"]\n\n`;
   const inboundText = contextHint + historyContext + content.text;
 
   // Agent 身份前缀，用于在群聊历史中标识消息来源
   const agentIdentityPrefix = `[${agentMatch.matchedName}] `;
 
-  // === 5. Build envelope and ctx ===
+  // === 6. Build envelope and ctx ===
   const envelopeOptions = rt.channel.reply.resolveEnvelopeFormatOptions(cfg);
   const previousTimestamp = rt.channel.session.readSessionUpdatedAt({
     storePath: agentStorePath,
@@ -1515,13 +1540,13 @@ async function processSubAgentMessage(params: {
     Surface: "dingtalk",
     MessageSid: data.msgId,
     Timestamp: data.createAt,
-    MediaPath: content.mediaPath,
-    MediaType: content.mediaType,
+    MediaPath: mediaPath,
+    MediaType: mediaType,
     OriginatingChannel: "dingtalk",
     OriginatingTo: to,
   });
 
-  // === 6. Record session ===
+  // === 7. Record session ===
   await rt.channel.session.recordInboundSession({
     storePath: agentStorePath,
     sessionKey: agentSessionKey,
@@ -1534,7 +1559,7 @@ async function processSubAgentMessage(params: {
     },
   });
 
-  // === 7. Dispatch reply ===
+  // === 8. Dispatch reply ===
   const releaseSessionLock = await acquireSessionLock(agentSessionKey);
   try {
     // Send thinking message
