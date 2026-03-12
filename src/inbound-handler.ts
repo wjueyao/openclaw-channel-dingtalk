@@ -1567,7 +1567,7 @@ async function processSubAgentMessage(params: {
     const mainStorePath = rt.channel.session.resolveStorePath(cfg.session?.store, {
       agentId: params.baseRoute.agentId,
     });
-    historyContext = getGroupHistoryContext(mainStorePath, params.baseRoute.sessionKey, 10, log);
+    historyContext = await getGroupHistoryContext(mainStorePath, params.baseRoute.sessionKey, 10, log);
   }
 
   // Add history context to message text

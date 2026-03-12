@@ -8,7 +8,6 @@
  * This is fragile because:
  * 1. The file schema is an internal implementation detail, not a public API
  * 2. Changes in OpenClaw's session format will break this code
- * 3. Synchronous file reads block the event loop
  *
  * ## Compatibility Strategy
  *
@@ -30,7 +29,7 @@
  * or implement an alternative approach that doesn't depend on internal file formats.
  */
 
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "./types";
 
@@ -49,12 +48,9 @@ interface SessionMessage {
 /**
  * Load session entry from sessions.json store
  */
-function loadSessionEntry(storePath: string, sessionKey: string): SessionEntry | null {
+async function loadSessionEntry(storePath: string, sessionKey: string): Promise<SessionEntry | null> {
   try {
-    if (!fs.existsSync(storePath)) {
-      return null;
-    }
-    const content = fs.readFileSync(storePath, "utf-8");
+    const content = await fs.readFile(storePath, "utf-8");
     const store = JSON.parse(content) as Record<string, SessionEntry>;
     return store[sessionKey] || null;
   } catch {
@@ -65,12 +61,12 @@ function loadSessionEntry(storePath: string, sessionKey: string): SessionEntry |
 /**
  * Read session history from JSONL file
  */
-function readSessionHistory(
+async function readSessionHistory(
   sessionId: string,
   storePath: string,
   sessionFile?: string,
   limit: number = 20,
-): SessionMessage[] {
+): Promise<SessionMessage[]> {
   const sessionsDir = path.dirname(storePath);
 
   // Try possible file paths
@@ -80,12 +76,24 @@ function readSessionHistory(
   }
   candidates.push(path.join(sessionsDir, `${sessionId}.jsonl`));
 
-  const filePath = candidates.find((p) => fs.existsSync(p));
+  // Try each candidate path
+  let filePath: string | null = null;
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate);
+      filePath = candidate;
+      break;
+    } catch {
+      // Try next candidate
+    }
+  }
+
   if (!filePath) {
     return [];
   }
 
-  const lines = fs.readFileSync(filePath, "utf-8").split(/\r?\n/);
+  const content = await fs.readFile(filePath, "utf-8");
+  const lines = content.split(/\r?\n/);
   const messages: SessionMessage[] = [];
 
   for (const line of lines) {
@@ -95,7 +103,7 @@ function readSessionHistory(
       if (parsed?.message) {
         const msg = parsed.message;
         // Extract text content
-        const content =
+        const textContent =
           typeof msg.content === "string"
             ? msg.content
             : Array.isArray(msg.content)
@@ -103,7 +111,7 @@ function readSessionHistory(
               : "";
         messages.push({
           role: msg.role,
-          content,
+          content: textContent,
           senderName: msg.senderName,
         });
       }
@@ -124,20 +132,20 @@ function readSessionHistory(
  * @param log - Optional logger
  * @returns Formatted history context string
  */
-export function getGroupHistoryContext(
+export async function getGroupHistoryContext(
   storePath: string,
   sessionKey: string,
   limit: number = 10,
   log?: Logger,
-): string {
+): Promise<string> {
   try {
-    const entry = loadSessionEntry(storePath, sessionKey);
+    const entry = await loadSessionEntry(storePath, sessionKey);
     if (!entry) {
       return "";
     }
 
     // Read exactly the number of messages we need
-    const messages = readSessionHistory(entry.sessionId, storePath, entry.sessionFile, limit);
+    const messages = await readSessionHistory(entry.sessionId, storePath, entry.sessionFile, limit);
 
     if (messages.length === 0) {
       return "";
