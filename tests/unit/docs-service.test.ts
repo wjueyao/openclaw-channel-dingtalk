@@ -12,7 +12,7 @@ vi.mock("axios", () => ({
   },
 }));
 
-import { appendToDoc, createDoc, listDocs, searchDocs } from "../../src/docs-service";
+import { appendToDoc, createDoc, DocCreateAppendError, listDocs, searchDocs } from "../../src/docs-service";
 
 const mockedAxiosPost = vi.mocked(axios.post);
 const mockedAxiosGet = vi.mocked(axios.get);
@@ -60,6 +60,23 @@ describe("docs-service", () => {
       expect.objectContaining({ parentDentryId: "parent_1" }),
       expect.any(Object),
     );
+  });
+
+  it("throws an error with created doc info when initial append fails", async () => {
+    mockedAxiosPost
+      .mockResolvedValueOnce({ data: { docId: "doc_partial", docType: "alidoc" } } as any)
+      .mockRejectedValueOnce(new Error("append boom"));
+
+    await expect(createDoc(config, "space_1", "测试文档", "第一段")).rejects.toMatchObject({
+      name: "DocCreateAppendError",
+      message: "initial content append failed after document creation",
+      doc: {
+        docId: "doc_partial",
+        title: "测试文档",
+        docType: "alidoc",
+      },
+      cause: expect.any(Error),
+    });
   });
 
   it("searches docs by keyword", async () => {

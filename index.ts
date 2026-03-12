@@ -3,7 +3,7 @@ import * as pluginSdk from "openclaw/plugin-sdk";
 import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { dingtalkPlugin } from "./src/channel";
 import { getConfig } from "./src/config";
-import { appendToDoc, createDoc, listDocs, searchDocs } from "./src/docs-service";
+import { appendToDoc, createDoc, DocCreateAppendError, listDocs, searchDocs } from "./src/docs-service";
 import { setDingTalkRuntime } from "./src/runtime";
 import type { DingtalkPluginModule } from "./src/types";
 
@@ -27,15 +27,27 @@ const plugin: DingtalkPluginModule = {
       const content = pluginSdk.readStringParam(params, "content", { allowEmpty: true });
       const parentId = pluginSdk.readStringParam(params, "parentId");
       const config = getConfig(api.config, accountId ?? undefined);
-      const doc = await createDoc(
-        config,
-        spaceId,
-        title,
-        content ?? undefined,
-        api.logger,
-        parentId ?? undefined,
-      );
-      return respond(true, doc);
+      try {
+        const doc = await createDoc(
+          config,
+          spaceId,
+          title,
+          content ?? undefined,
+          api.logger,
+          parentId ?? undefined,
+        );
+        return respond(true, doc);
+      } catch (error) {
+        if (error instanceof DocCreateAppendError) {
+          return respond(false, {
+            error: error.message,
+            partialSuccess: true,
+            docId: error.doc.docId,
+            doc: error.doc,
+          });
+        }
+        throw error;
+      }
     });
     api.registerGatewayMethod("dingtalk.docs.append", async ({ respond, params }: GatewayMethodContext) => {
       const accountId = pluginSdk.readStringParam(params, "accountId");

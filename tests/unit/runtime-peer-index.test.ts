@@ -5,6 +5,14 @@ const shared = vi.hoisted(() => ({
     appendToDocMock: vi.fn(),
     searchDocsMock: vi.fn(),
     listDocsMock: vi.fn(),
+    DocCreateAppendErrorMock: class extends Error {
+        doc: unknown;
+        constructor(doc: unknown) {
+            super('initial content append failed after document creation');
+            this.name = 'DocCreateAppendError';
+            this.doc = doc;
+        }
+    },
 }));
 
 vi.mock('openclaw/plugin-sdk', () => ({
@@ -34,6 +42,7 @@ vi.mock('../../src/docs-service', () => ({
     appendToDoc: shared.appendToDocMock,
     searchDocs: shared.searchDocsMock,
     listDocs: shared.listDocsMock,
+    DocCreateAppendError: shared.DocCreateAppendErrorMock,
 }));
 
 describe('runtime + peer registry + index plugin', () => {
@@ -130,6 +139,37 @@ describe('runtime + peer registry + index plugin', () => {
         });
         expect(respondSearch).toHaveBeenCalledWith(true, {
             docs: [{ docId: 'doc_2', title: '周报', docType: 'alidoc' }],
+        });
+    });
+
+    it('returns partial success payload when initial doc append fails after creation', async () => {
+        const plugin = (await import('../../index')).default;
+        const registerGatewayMethod = vi.fn();
+
+        plugin.register({
+            runtime: {},
+            registerChannel: vi.fn(),
+            registerGatewayMethod,
+            config: { channels: { dingtalk: { clientId: 'id', clientSecret: 'sec' } } },
+            logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        } as any);
+
+        const createHandler = registerGatewayMethod.mock.calls.find((call: any[]) => call[0] === 'dingtalk.docs.create')?.[1];
+        const respondCreate = vi.fn();
+        shared.createDocMock.mockRejectedValueOnce(
+            new shared.DocCreateAppendErrorMock({ docId: 'doc_partial', title: '测试文档', docType: 'alidoc' }),
+        );
+
+        await createHandler?.({
+            respond: respondCreate,
+            params: { spaceId: 'space_1', title: '测试文档', content: '第一段' },
+        });
+
+        expect(respondCreate).toHaveBeenCalledWith(false, {
+            error: 'initial content append failed after document creation',
+            partialSuccess: true,
+            docId: 'doc_partial',
+            doc: { docId: 'doc_partial', title: '测试文档', docType: 'alidoc' },
         });
     });
 });

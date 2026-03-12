@@ -43,6 +43,17 @@ type AppendDocResponse = {
   success?: boolean;
 };
 
+export class DocCreateAppendError extends Error {
+  readonly doc: DocInfo;
+
+  constructor(doc: DocInfo, cause?: unknown) {
+    super("initial content append failed after document creation");
+    this.name = "DocCreateAppendError";
+    this.doc = doc;
+    this.cause = cause;
+  }
+}
+
 function mapCreatedDoc(item: CreateDocResponse): DocInfo {
   return {
     docId: item.docId ?? "",
@@ -103,7 +114,11 @@ export async function createDoc(
     docType: createdBase.docType || "alidoc",
   };
   if (content?.trim() && created.docId) {
-    await appendToDoc(config, created.docId, content, log);
+    try {
+      await appendToDoc(config, created.docId, content, log);
+    } catch (error) {
+      throw new DocCreateAppendError(created, error);
+    }
   }
   return created;
 }
