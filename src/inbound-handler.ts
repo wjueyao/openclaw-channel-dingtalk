@@ -486,8 +486,11 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           }
         }
 
-        // 如果有未匹配的名字，发送提示
-        if (unmatchedNames.length > 0) {
+        // 如果有未匹配的名字，判断是否需要发送提示
+        // realUserCount 来自 resolveAtAgents，表示通过 @picker 选中的真人数量
+        // 如果未匹配名字数量 <= 真人数量，这些名字可能都是真人，不需要报错
+        const hasInvalidAgentNames = unmatchedNames.length > realUserCount;
+        if (hasInvalidAgentNames) {
           const fallbackReason = `未找到名为"${unmatchedNames.join("、")}"的助手`;
           try {
             await sendBySession(dingtalkConfig, sessionWebhook, `⚠️ ${fallbackReason}`, {
@@ -503,8 +506,11 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
       }
 
       // 有 @ 但没有匹配到任何 agent，检查是否需要 fallback 提示
-      const allAreRealUsers = atMentions.every((m) => m.userId);
-      if (!allAreRealUsers && unmatchedNames.length > 0) {
+      // realUserCount 来自 resolveAtAgents，表示通过 @picker 选中的真人数量
+      // 如果未匹配名字数量 <= 真人数量，这些名字可能都是真人，不需要报错
+      // 只有当未匹配名字数量 > 真人数量时，才说明有无效的 agent 名
+      const hasInvalidAgentNames = unmatchedNames.length > realUserCount;
+      if (hasInvalidAgentNames && unmatchedNames.length > 0) {
         // 有无效的 agent 名字，发送提示后继续用 main agent 处理
         const fallbackReason = `未找到名为"${unmatchedNames.join("、")}"的助手`;
         try {

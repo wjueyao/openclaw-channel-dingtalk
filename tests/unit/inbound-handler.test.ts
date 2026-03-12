@@ -2503,6 +2503,101 @@ describe('inbound-handler', () => {
       );
     });
 
+    it('does not show error when @mention matches real user count from atUserDingtalkIds', async () => {
+      const runtime = buildRuntime();
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      // @张三 (真人) - atUserDingtalkIds has 1 entry
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@张三 你好',
+        messageType: 'text',
+        atMentions: [{ name: '张三' }], // no userId (text mode)
+        atUserDingtalkIds: ['dingtalk_id_zhangsan'], // 1 real user
+      });
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [{ id: 'main', name: '助手', default: true }],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_text_real_user',
+          msgtype: 'text',
+          text: { content: '@张三 你好' },
+          conversationType: '2', // group chat
+          conversationId: 'group_1',
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // unmatchedNames (1) <= realUserCount (1), so no error should be shown
+      expect(shared.sendBySessionMock).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.stringContaining('未找到'),
+        expect.anything(),
+      );
+    });
+
+    it('shows error when @mention count exceeds real user count', async () => {
+      const runtime = buildRuntime();
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      // @张三 @不存在的agent - atUserDingtalkIds has 1 entry, but 2 @mentions
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@张三 @不存在的agent 你好',
+        messageType: 'text',
+        atMentions: [{ name: '张三' }, { name: '不存在的agent' }],
+        atUserDingtalkIds: ['dingtalk_id_zhangsan'], // only 1 real user
+      });
+      shared.sendBySessionMock.mockResolvedValue(undefined);
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [{ id: 'main', name: '助手', default: true }],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_text_invalid_agent',
+          msgtype: 'text',
+          text: { content: '@张三 @不存在的agent 你好' },
+          conversationType: '2', // group chat
+          conversationId: 'group_1',
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // unmatchedNames (2) > realUserCount (1), so error should be shown
+      expect(shared.sendBySessionMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.stringContaining('未找到'),
+        expect.anything(),
+      );
+    });
+
     it('uses correct sessionWebhook for each sub-agent in order', async () => {
       const webhookCalls: Array<{ agentId: string; webhook: string; responsePrefix: string }> = [];
       const runtime = buildRuntime();
