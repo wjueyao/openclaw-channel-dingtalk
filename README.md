@@ -552,6 +552,59 @@ node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json
   - `/learn disable <ruleId>`
   - `/learn delete <ruleId>`
 
+#### 会话共享命令
+
+这些命令同样只允许 owner 使用，但它们不属于 `/learn` 规则注入，而是用于控制“哪个私聊/哪个群共用同一条会话记忆”。
+
+- **查看当前会话 alias**
+  - `/session-alias show`
+  - 用途：查看当前私聊或当前群当前实际使用的 peerId，以及它是默认值还是 override
+- **把当前会话绑定到共享 alias**
+  - `/session-alias set <alias>`
+  - 用途：把当前私聊或当前群绑定到指定共享会话别名
+- **清除当前会话 alias**
+  - `/session-alias clear`
+  - 用途：移除当前私聊或当前群的 override，恢复默认 peerId
+- **owner 远程绑定某个私聊**
+  - `/session-alias bind direct <senderId> <alias>`
+  - 用途：把某个用户私聊直接绑定到共享 alias
+- **owner 远程绑定某个群**
+  - `/session-alias bind group <conversationId> <alias>`
+  - 用途：把某个群直接绑定到共享 alias
+- **owner 远程解除绑定**
+  - `/session-alias unbind direct <senderId>`
+  - `/session-alias unbind group <conversationId>`
+
+#### 会话共享例子
+
+假设你想让“用户 A 的私聊”和“群 project-x”共用同一条会话记忆：
+
+1. 先让用户 A 私聊机器人，发送：
+   - `我是谁`
+   - 记下返回的 `senderId`
+2. 在目标群里发送：
+   - `这里是谁`
+   - 记下返回的 `conversationId`
+3. 由 owner 在任意 owner 会话里执行：
+
+```text
+/session-alias bind direct dingtalk:user_a_sender_id project-x
+/session-alias bind group cid_group_project_x project-x
+```
+
+这样之后：
+- 用户 A 私聊机器人
+- 群 `cid_group_project_x`
+
+都会共用 `project-x` 这条会话记忆。
+
+如果想解除其中一边：
+
+```text
+/session-alias unbind direct dingtalk:user_a_sender_id
+/session-alias unbind group cid_group_project_x
+```
+
 #### 真实可直接照抄的例子
 
 ```text
