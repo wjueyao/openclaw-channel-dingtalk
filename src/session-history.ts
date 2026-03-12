@@ -2,6 +2,16 @@
  * Session history utilities for @sub-agent feature
  *
  * Reads session history from JSONL files to provide group chat context.
+ *
+ * @technical-debt
+ * This module directly reads OpenClaw's internal session files (sessions.json and .jsonl).
+ * This is fragile because:
+ * 1. The file schema is an internal implementation detail, not a public API
+ * 2. Changes in OpenClaw's session format will break this code
+ * 3. Synchronous file reads block the event loop
+ *
+ * TODO: Request OpenClaw to provide a public API for reading session history,
+ * or implement an alternative approach that doesn't depend on internal file formats.
  */
 
 import fs from "node:fs";

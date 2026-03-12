@@ -363,6 +363,20 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   });
 
   // ==================== @Sub-Agent 处理 ====================
+  /**
+   * @technical-debt Multi-agent routing implementation
+   *
+   * This @mention → agent routing is implemented at the channel plugin level,
+   * which conflicts with OpenClaw's framework-level bindings mechanism.
+   *
+   * Ideally, multi-agent @mention routing should be a framework capability:
+   * - Framework's rt.channel.routing already supports agentId parameter
+   * - This implementation uses a separate cfg.agents.list config, bypassing bindings
+   * - Future OpenClaw native support may cause conflicts
+   *
+   * TODO: Request OpenClaw to provide native @agent routing, then migrate.
+   * See: https://github.com/wjueyao/openclaw/issues/XXX
+   */
   // 检测是否有 @sub-agent 需要处理
   const atMentions = content.atMentions || [];
   log?.info?.(
@@ -375,32 +389,31 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     );
 
     if (matchedAgents.length > 0) {
-      // 有匹配的 sub-agent，并行处理
+      // 有匹配的 sub-agent，顺序处理（避免 sessionWebhook 竞争和消息交错）
       log?.debug?.(
         `[DingTalk] Sub-agent matched: agents=${matchedAgents.map((a) => a.agentId).join(",")} groupId=${groupId}`,
       );
 
-      // 并行处理所有匹配的 agent
-      const tasks = matchedAgents.map((agentMatch) =>
-        processSubAgentMessage({
-          cfg,
-          accountId,
-          data,
-          content,
-          agentMatch,
-          baseRoute: route,
-          dingtalkConfig,
-          sessionWebhook,
-          log,
-        }).catch((error) => {
+      // 顺序处理所有匹配的 agent，确保消息有序
+      for (const agentMatch of matchedAgents) {
+        try {
+          await processSubAgentMessage({
+            cfg,
+            accountId,
+            data,
+            content,
+            agentMatch,
+            baseRoute: route,
+            dingtalkConfig,
+            sessionWebhook,
+            log,
+          });
+        } catch (error) {
           log?.error?.(
             `[DingTalk] Sub-agent ${agentMatch.agentId} failed: ${error instanceof Error ? error.message : String(error)}`,
           );
-          return null;
-        }),
-      );
-
-      await Promise.allSettled(tasks);
+        }
+      }
 
       // 如果有未匹配的名字，发送提示
       if (unmatchedNames.length > 0) {
@@ -1380,6 +1393,25 @@ async function processSubAgentMessage(params: {
   const groupId = data.conversationId;
   const senderName = data.senderNick || data.senderId;
   const to = isDirect ? senderId : groupId;
+
+  // === 0. 鉴权检查 ===
+  // 群聊权限检查
+  if (isGroup) {
+    const groupPolicy = dingtalkConfig.groupPolicy || "open";
+    const allowFrom = dingtalkConfig.allowFrom || [];
+
+    if (groupPolicy === "allowlist") {
+      const normalizedAllowFrom = normalizeAllowFrom(allowFrom);
+      const isAllowed = isSenderGroupAllowed({ allow: normalizedAllowFrom, groupId });
+
+      if (!isAllowed) {
+        log?.debug?.(
+          `[DingTalk] Sub-agent ${agentMatch.agentId} blocked: groupId=${groupId} not in allowlist (groupPolicy=allowlist)`,
+        );
+        return;
+      }
+    }
+  }
 
   // === 1. Build session key for this agent ===
   const agentSessionKey = buildAgentSpecificSessionKey({

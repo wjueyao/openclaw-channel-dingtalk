@@ -246,11 +246,26 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
 
   if (msgtype === "text") {
     const textContent = quotedPrefix + (data.text?.content?.trim() || "");
-    // 从文本中解析 @ 提及（兼容纯文本格式）
-    const atMatches = textContent.matchAll(/@([^\s@]+)/g);
-    for (const match of atMatches) {
-      atMentions.push({ name: match[1].trim() });
+
+    // 优先从 atUsers 字段提取 @ 提及（包含 userId，可区分真人和 agent）
+    const atUsers = data.text?.atUsers;
+    if (atUsers && Array.isArray(atUsers)) {
+      for (const user of atUsers) {
+        if (user.userName || user.userId) {
+          atMentions.push({
+            name: (user.userName || user.userId || "").trim(),
+            userId: user.userId,
+          });
+        }
+      }
+    } else {
+      // 回退：从文本中解析 @ 提及（无 userId，无法区分真人/agent）
+      const atMatches = textContent.matchAll(/@([^\s@]+)/g);
+      for (const match of atMatches) {
+        atMentions.push({ name: match[1].trim() });
+      }
     }
+
     return { text: textContent, messageType: "text", quoted: quoted ?? undefined, atMentions };
   }
 

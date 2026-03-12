@@ -194,6 +194,11 @@ export interface DingTalkInboundMessage {
   text?: {
     content: string;
     isReplyMsg?: boolean; // 是否是回复消息
+    /** @ 提及的用户列表（钉钉纯文本消息格式） */
+    atUsers?: Array<{
+      userId: string;
+      userName?: string;
+    }>;
     repliedMsg?: {
       msgType?: string;
       msgId?: string;
