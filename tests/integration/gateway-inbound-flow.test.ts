@@ -203,6 +203,7 @@ describe('gateway inbound callback pipeline', () => {
                 sessionWebhook: 'https://webhook',
                 dingtalkConfig: expect.objectContaining({
                     asyncMode: true,
+                    messageType: 'markdown',
                     showThinking: false,
                 }),
             })
@@ -212,6 +213,49 @@ describe('gateway inbound callback pipeline', () => {
         await Promise.resolve();
 
         expect(shared.markMessageProcessedMock).toHaveBeenCalledWith('robot_1:msg_async_1');
+    });
+
+    it('forces markdown background replies when asyncMode is enabled even if card mode is configured', async () => {
+        shared.isMessageProcessedMock.mockReturnValue(false);
+        shared.handleDingTalkMessageMock.mockResolvedValueOnce(undefined);
+        const ctx = createStartContext();
+        ctx.account.config.asyncMode = true;
+        ctx.account.config.messageType = 'card';
+
+        await startGatewayAccount(ctx as any);
+
+        await shared.listeners.TOPIC_ROBOT?.({
+            headers: { messageId: 'stream_msg_async_card' },
+            data: JSON.stringify({
+                msgId: 'msg_async_card',
+                msgtype: 'text',
+                text: { content: '帮我异步处理卡片模式' },
+                conversationType: '1',
+                conversationId: 'cidA1B2C3',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://webhook',
+            }),
+        });
+
+        await Promise.resolve();
+
+        expect(shared.sendBySessionMock).toHaveBeenNthCalledWith(
+            1,
+            expect.objectContaining({ asyncMode: true, messageType: 'card' }),
+            'https://webhook',
+            '已收到，正在处理中，稍后回复。',
+            expect.objectContaining({ log: ctx.log }),
+        );
+        expect(shared.handleDingTalkMessageMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                dingtalkConfig: expect.objectContaining({
+                    asyncMode: true,
+                    messageType: 'markdown',
+                    showThinking: false,
+                }),
+            })
+        );
     });
 
     it('sends failure notice when async background processing fails after early ack', async () => {

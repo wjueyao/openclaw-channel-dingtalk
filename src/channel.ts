@@ -795,7 +795,6 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
             if (!messageId) {
               return;
             }
-<<<<<<< HEAD
             try {
               c.socketCallBackResponse(messageId, { success: true });
             } catch (ackError: any) {
@@ -804,29 +803,6 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
               );
             }
           };
-||||||| parent of 00a64de (fix(dingtalk): keep async inflight lock until completion)
-          } finally {
-            processingDedupKeys.delete(dedupKey);
-          }
-        } catch (error: any) {
-          stats.failed += 1;
-          logInboundCounters(ctx.log, account.accountId, "failed");
-          ctx.log?.error?.(`[${account.accountId}] Error processing message: ${error.message}`);
-        }
-      });
-=======
-          } finally {
-            if (releaseInOuterFinally) {
-              processingDedupKeys.delete(dedupKey);
-            }
-          }
-        } catch (error: any) {
-          stats.failed += 1;
-          logInboundCounters(ctx.log, account.accountId, "failed");
-          ctx.log?.error?.(`[${account.accountId}] Error processing message: ${error.message}`);
-        }
-      });
->>>>>>> 00a64de (fix(dingtalk): keep async inflight lock until completion)
 
           try {
             const payload = JSON.parse(res.data);

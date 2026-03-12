@@ -398,6 +398,7 @@ openclaw gateway restart
 
 - 即时回执文案由 `asyncAckText` 控制
 - 当前仅对带 `sessionWebhook` 的普通文本消息生效
+- 异步后台回复会强制使用 `markdown` 模式；即使配置了 `messageType: "card"`，也不会创建或流式更新 AI 卡片
 - 后台处理失败时，会额外回一条失败提示，避免静默丢回复
 
 ### 连接鲁棒性配置
