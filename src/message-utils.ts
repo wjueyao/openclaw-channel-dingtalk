@@ -317,23 +317,24 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
   if (msgtype === "text") {
     const textContent = quotedPrefix + (data.text?.content?.trim() || "");
 
-    // 优先从 atUsers 字段提取 @ 提及（包含 userId，可区分真人和 agent）
-    const atUsers = data.text?.atUsers;
-    if (atUsers && Array.isArray(atUsers)) {
-      for (const user of atUsers) {
-        if (user.userName || user.userId) {
-          atMentions.push({
-            name: (user.userName || user.userId || "").trim(),
-            userId: user.userId,
-          });
-        }
-      }
-    } else {
-      // 回退：从文本中解析 @ 提及（无 userId，无法区分真人/agent）
-      const atMatches = textContent.matchAll(/@([^\s@]+)/g);
-      for (const match of atMatches) {
-        atMentions.push({ name: match[1].trim() });
-      }
+    /**
+     * 纯文本消息的 @ 提取策略：
+     *
+     * 钉钉纯文本消息中，用户直接输入 @ + 名字，没有 @picker 选人。
+     * data.atUsers 在顶层（与 text 同级），只包含通过 @picker 选中的真实用户，
+     * 所以纯文本消息中 atUsers 通常为空或不存在。
+     *
+     * 因此，我们无法区分 @张三 是真实用户还是 agent 名。
+     * 只能全部提取，让 agent-name-matcher 后续排除：
+     * - 如果 @名字 匹配到配置的 agent，触发 agent
+     * - 如果没匹配到 agent，且不是真实用户（没有 userId），显示"未找到助手"
+     *
+     * 对于 richText 消息，part.type === "at" 会提供 atUserId，
+     * 可以准确区分真人和 agent。
+     */
+    const atMatches = textContent.matchAll(/@([^\s@]+)/g);
+    for (const match of atMatches) {
+      atMentions.push({ name: match[1].trim() });
     }
 
     return { text: textContent, messageType: "text", quoted: quoted ?? undefined, atMentions };

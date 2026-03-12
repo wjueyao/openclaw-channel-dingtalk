@@ -195,14 +195,17 @@ export interface DingTalkInboundMessage {
   msgId: string;
   msgtype: string;
   createAt: number;
+  /**
+   * @ 提及的用户列表（消息顶层，与 text 同级）
+   * 包含通过 @picker 选中的所有真实钉钉用户和机器人
+   * 格式: [{ dingtalkId: "$:LWCP_v1:$xxx" }]
+   */
+  atUsers?: Array<{
+    dingtalkId: string;
+  }>;
   text?: {
     content: string;
     isReplyMsg?: boolean; // 是否是回复消息
-    /** @ 提及的用户列表（钉钉纯文本消息格式） */
-    atUsers?: Array<{
-      userId: string;
-      userName?: string;
-    }>;
     repliedMsg?: {
       msgType?: string;
       msgId?: string;
