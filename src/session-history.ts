@@ -10,6 +10,22 @@
  * 2. Changes in OpenClaw's session format will break this code
  * 3. Synchronous file reads block the event loop
  *
+ * ## Compatibility Strategy
+ *
+ * Expected file formats:
+ * - sessions.json: `{ [sessionKey]: { sessionId: string, updatedAt: number, sessionFile?: string } }`
+ * - *.jsonl: Each line is `{ message: { role: string, content: string | Array, senderName?: string } }`
+ *
+ * If OpenClaw changes these formats, this module will fail silently (return empty context).
+ * The sub-agent will still function, just without group chat history context.
+ *
+ * ## Graceful Degradation
+ *
+ * - File not found → return empty string (no history)
+ * - Parse error → skip that line/entry, continue processing
+ * - Missing fields → use sensible defaults
+ * - Any exception → log warning, return empty string
+ *
  * TODO: Request OpenClaw to provide a public API for reading session history,
  * or implement an alternative approach that doesn't depend on internal file formats.
  */

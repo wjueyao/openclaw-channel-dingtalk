@@ -80,7 +80,10 @@ const mockedAxiosGet = vi.mocked(axios.get);
 function buildRuntime() {
     return {
         channel: {
-            routing: { resolveAgentRoute: vi.fn().mockReturnValue({ agentId: 'main', sessionKey: 's1', mainSessionKey: 's1' }) },
+            routing: {
+                resolveAgentRoute: vi.fn().mockReturnValue({ agentId: 'main', sessionKey: 's1', mainSessionKey: 's1' }),
+                buildAgentSessionKey: vi.fn().mockReturnValue('agent-session-key'),
+            },
             media: {
                 saveMediaBuffer: vi.fn().mockResolvedValue({
                     path: '/tmp/.openclaw/media/inbound/test-file.png',
@@ -2109,5 +2112,150 @@ describe('inbound-handler', () => {
             expect.stringContaining('Unhandled stop reason:'),
             expect.anything(),
         );
+    });
+
+    // ==================== @Sub-Agent 回归测试 ====================
+    describe('@sub-agent feature', () => {
+        it('respects groupPolicy allowlist for sub-agent routing', async () => {
+            const runtime = buildRuntime();
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+            shared.extractMessageContentMock.mockReturnValue({
+                text: '@expert1 帮我看看',
+                messageType: 'text',
+                atMentions: [{ name: 'expert1' }],
+            });
+            shared.sendBySessionMock.mockResolvedValue(undefined);
+
+            await handleDingTalkMessage({
+                cfg: {
+                    agents: {
+                        list: [{ id: 'expert1', name: '专家1' }],
+                    },
+                },
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+                dingtalkConfig: {
+                    dmPolicy: 'open',
+                    groupPolicy: 'allowlist',
+                    allowFrom: ['allowed_group'],
+                    messageType: 'markdown',
+                    showThinking: false,
+                } as any,
+                data: {
+                    msgId: 'm_subagent_1',
+                    msgtype: 'text',
+                    text: { content: '@expert1 帮我看看' },
+                    conversationType: '2', // group chat
+                    conversationId: 'blocked_group', // not in allowlist
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+
+            // Should send access denied message, not sub-agent response
+            expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+            expect(String(shared.sendBySessionMock.mock.calls[0]?.[2])).toContain('访问受限');
+        });
+
+        it('processes multiple sub-agents sequentially, not in parallel', async () => {
+            const callOrder: string[] = [];
+            const runtime = buildRuntime();
+            runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ dispatcherOptions }) => {
+                callOrder.push('dispatch_start');
+                await dispatcherOptions.deliver({ text: 'response' }, { kind: 'final' });
+                callOrder.push('dispatch_end');
+                return { queuedFinal: 'done' };
+            });
+            // Use mockReturnValue instead of mockReturnValueOnce to ensure all getDingTalkRuntime calls return our runtime
+            shared.getRuntimeMock.mockReturnValue(runtime);
+            shared.extractMessageContentMock.mockReturnValue({
+                text: '@agent1 @agent2 帮我看看',
+                messageType: 'text',
+                atMentions: [{ name: 'agent1' }, { name: 'agent2' }],
+            });
+
+            await handleDingTalkMessage({
+                cfg: {
+                    agents: {
+                        list: [
+                            { id: 'agent1', name: 'Agent1' },
+                            { id: 'agent2', name: 'Agent2' },
+                        ],
+                    },
+                },
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+                dingtalkConfig: {
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    showThinking: false,
+                } as any,
+                data: {
+                    msgId: 'm_subagent_2',
+                    msgtype: 'text',
+                    text: { content: '@agent1 @agent2 帮我看看' },
+                    conversationType: '2', // group chat
+                    conversationId: 'group_1',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+
+            // Sequential processing means dispatch is called twice in order
+            expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+            // If parallel, we might see interleaved calls; sequential ensures complete one before next
+            expect(callOrder).toEqual(['dispatch_start', 'dispatch_end', 'dispatch_start', 'dispatch_end']);
+        });
+
+        it('handles @mention of real user without error', async () => {
+            const runtime = buildRuntime();
+            shared.getRuntimeMock.mockReturnValueOnce(runtime);
+            shared.extractMessageContentMock.mockReturnValue({
+                text: '@张三 你好',
+                messageType: 'text',
+                atMentions: [{ name: '张三', userId: 'real_user_123' }], // has userId = real user
+            });
+
+            await handleDingTalkMessage({
+                cfg: {
+                    agents: {
+                        list: [{ id: 'main', name: '助手', default: true }],
+                    },
+                },
+                accountId: 'main',
+                sessionWebhook: 'https://session.webhook',
+                log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+                dingtalkConfig: {
+                    dmPolicy: 'open',
+                    messageType: 'markdown',
+                    showThinking: false,
+                } as any,
+                data: {
+                    msgId: 'm_subagent_3',
+                    msgtype: 'text',
+                    text: { content: '@张三 你好' },
+                    conversationType: '2', // group chat
+                    conversationId: 'group_1',
+                    senderId: 'user_1',
+                    chatbotUserId: 'bot_1',
+                    sessionWebhook: 'https://session.webhook',
+                    createAt: Date.now(),
+                },
+            } as any);
+
+            // Should NOT show "未找到助手" error for real user
+            expect(shared.sendBySessionMock).not.toHaveBeenCalledWith(
+                expect.anything(),
+                expect.anything(),
+                expect.stringContaining('未找到'),
+                expect.anything(),
+            );
+        });
     });
 });
