@@ -152,6 +152,53 @@ describe('config advanced', () => {
         expect((merged as any).accounts).toBeUndefined();
     });
 
+    it('normalizes legacy learning keys in single-account config', () => {
+        const cfg = {
+            channels: {
+                dingtalk: {
+                    clientId: 'top_id',
+                    clientSecret: 'top_sec',
+                    feedbackLearningEnabled: true,
+                    feedbackLearningAutoApply: true,
+                    feedbackLearningNoteTtlMs: 120000,
+                },
+            },
+        } as any;
+
+        const resolved = getConfig(cfg);
+        expect(resolved.learningEnabled).toBe(true);
+        expect(resolved.learningAutoApply).toBe(true);
+        expect(resolved.learningNoteTtlMs).toBe(120000);
+    });
+
+    it('normalizes account-level legacy learning keys with account override precedence', () => {
+        const cfg = {
+            channels: {
+                dingtalk: {
+                    clientId: 'top_id',
+                    clientSecret: 'top_sec',
+                    learningEnabled: true,
+                    learningAutoApply: true,
+                    learningNoteTtlMs: 3600000,
+                    accounts: {
+                        bot1: {
+                            clientId: 'bot1_id',
+                            clientSecret: 'bot1_sec',
+                            feedbackLearningEnabled: true,
+                            feedbackLearningAutoApply: false,
+                            feedbackLearningNoteTtlMs: 180000,
+                        },
+                    },
+                },
+            },
+        } as any;
+
+        const resolved = getConfig(cfg, 'bot1');
+        expect(resolved.learningEnabled).toBe(true);
+        expect(resolved.learningAutoApply).toBe(false);
+        expect(resolved.learningNoteTtlMs).toBe(180000);
+    });
+
     it('recovers Windows root-relative workspace paths only on win32', () => {
         Object.defineProperty(process, 'platform', {
             configurable: true,

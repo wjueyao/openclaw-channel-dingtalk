@@ -130,27 +130,15 @@ const DingTalkAccountConfigShape = {
   feedbackLearningNoteTtlMs: z.number().int().min(60_000).optional(),
 } as const;
 
-const DingTalkAccountConfigSchemaBase = z.object(DingTalkAccountConfigShape);
-
-const DingTalkAccountConfigSchema = DingTalkAccountConfigSchemaBase.transform((value) => ({
-  ...value,
-  learningEnabled: value.learningEnabled ?? value.feedbackLearningEnabled ?? false,
-  learningAutoApply: value.learningAutoApply ?? value.feedbackLearningAutoApply ?? false,
-  learningNoteTtlMs: value.learningNoteTtlMs ?? value.feedbackLearningNoteTtlMs ?? 6 * 60 * 60 * 1000,
-}));
+const DingTalkAccountConfigSchema = z.object(DingTalkAccountConfigShape);
 
 /**
  * DingTalk configuration schema using Zod
  * Mirrors the structure needed for proper control-ui rendering
  */
-export const DingTalkConfigSchema: z.ZodTypeAny = DingTalkAccountConfigSchemaBase.extend({
+export const DingTalkConfigSchema: z.ZodTypeAny = DingTalkAccountConfigSchema.extend({
   /** Multi-account configuration */
   accounts: z.record(z.string(), DingTalkAccountConfigSchema.optional()).optional(),
-}).transform((value) => ({
-  ...value,
-  learningEnabled: value.learningEnabled ?? value.feedbackLearningEnabled ?? false,
-  learningAutoApply: value.learningAutoApply ?? value.feedbackLearningAutoApply ?? false,
-  learningNoteTtlMs: value.learningNoteTtlMs ?? value.feedbackLearningNoteTtlMs ?? 6 * 60 * 60 * 1000,
-}));
+});
 
 export type DingTalkConfig = z.infer<typeof DingTalkConfigSchema>;

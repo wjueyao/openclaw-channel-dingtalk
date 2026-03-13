@@ -115,8 +115,8 @@ describe('DingTalkConfigSchema', () => {
 
         expect(parsed.learningEnabled).toBe(true);
         expect(parsed.allowFrom).toEqual(['owner-test-id']);
-        expect(parsed.learningAutoApply).toBe(false);
-        expect(parsed.learningNoteTtlMs).toBe(6 * 60 * 60 * 1000);
+        expect(parsed.learningAutoApply).toBeUndefined();
+        expect(parsed.learningNoteTtlMs).toBeUndefined();
     });
 
     it('keeps backward compatibility for legacy feedback learning keys', () => {
@@ -126,11 +126,35 @@ describe('DingTalkConfigSchema', () => {
             feedbackLearningEnabled: true,
             feedbackLearningAutoApply: true,
             feedbackLearningNoteTtlMs: 120000,
-        }) as { learningEnabled?: boolean; learningAutoApply?: boolean; learningNoteTtlMs?: number };
+        }) as {
+            learningEnabled?: boolean;
+            learningAutoApply?: boolean;
+            learningNoteTtlMs?: number;
+            feedbackLearningEnabled?: boolean;
+            feedbackLearningAutoApply?: boolean;
+            feedbackLearningNoteTtlMs?: number;
+        };
 
-        expect(parsed.learningEnabled).toBe(true);
-        expect(parsed.learningAutoApply).toBe(true);
-        expect(parsed.learningNoteTtlMs).toBe(120000);
+        expect(parsed.learningEnabled).toBeUndefined();
+        expect(parsed.learningAutoApply).toBeUndefined();
+        expect(parsed.learningNoteTtlMs).toBeUndefined();
+        expect(parsed.feedbackLearningEnabled).toBe(true);
+        expect(parsed.feedbackLearningAutoApply).toBe(true);
+        expect(parsed.feedbackLearningNoteTtlMs).toBe(120000);
+    });
+
+    it('exports control-ui-compatible JSON schema nodes', () => {
+        const jsonSchema = DingTalkConfigSchema.toJSONSchema({
+            target: 'draft-07',
+            unrepresentable: 'any',
+        }) as {
+            type?: string;
+            properties?: Record<string, any>;
+        };
+
+        expect(jsonSchema.type).toBe('object');
+        expect(jsonSchema.properties?.accounts?.type).toBe('object');
+        expect(jsonSchema.properties?.accounts?.additionalProperties?.type).toBe('object');
     });
 
 });
