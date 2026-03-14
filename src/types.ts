@@ -295,6 +295,18 @@ export interface AgentNameMatch {
 }
 
 /**
+ * Sub-agent 处理结果，包含回复文本用于讨论记录累积
+ */
+export interface SubAgentResult {
+  /** 专家显示名 */
+  agentName: string;
+  /** 专家回复全文 */
+  replyText: string;
+  /** 回复中 @的其他专家 ID */
+  mentionedAgentIds: string[];
+}
+
+/**
  * Extracted message content for unified processing
  */
 export interface MessageContent {

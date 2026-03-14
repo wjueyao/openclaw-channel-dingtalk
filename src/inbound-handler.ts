@@ -6,6 +6,7 @@ import {
   extractAgentMentionsFromText,
   formatAgentList,
 } from "./agent-name-matcher";
+import { buildDiscussionContext } from "./discussion-context";
 import { getAccessToken } from "./auth";
 import {
   createAICard,
@@ -62,7 +63,7 @@ import { getGroupHistoryContext } from "./session-history";
 import { acquireSessionLock } from "./session-lock";
 import type { DingTalkConfig, HandleDingTalkMessageParams, MediaFile } from "./types";
 import { AICardStatus } from "./types";
-import type { AgentNameMatch, DingTalkInboundMessage } from "./types";
+import type { AgentNameMatch, DingTalkInboundMessage, SubAgentResult } from "./types";
 import { formatDingTalkErrorPayloadLog, maskSensitiveData } from "./utils";
 
 const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
@@ -406,6 +407,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
       // 追踪已参与的 agent，防止重复调用
       const participatedAgents = new Set<string>();
+      const discussionLog: Array<{ agentName: string; text: string }> = [];
 
       // 当前轮次要处理的 agent 列表
       let agentsToProcess = [...matchedAgents];
@@ -443,21 +445,31 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
               dingtalkConfig,
               sessionWebhook,
               participatedAgents: Array.from(participatedAgents),
+              discussionLog,
               log,
             }).catch((error) => {
               log?.error?.(
                 `[DingTalk] Sub-agent ${agentMatch.agentId} failed: ${error instanceof Error ? error.message : String(error)}`,
               );
-              return [];
+              return null;
             }),
           ),
         );
 
-        // 收集下一轮要处理的 agent（被当前轮 agent @ 的）
+        // 收集本轮结果，累积讨论记录，准备下一轮
         const nextRoundAgentIds: string[] = [];
         for (const result of roundResults) {
-          if (result.status === "fulfilled" && Array.isArray(result.value)) {
-            for (const agentId of result.value) {
+          if (result.status === "fulfilled" && result.value != null) {
+            const subResult = result.value as SubAgentResult;
+            // 累积讨论记录
+            if (subResult.replyText) {
+              discussionLog.push({
+                agentName: subResult.agentName,
+                text: subResult.replyText,
+              });
+            }
+            // 收集下一轮要触发的 agent
+            for (const agentId of subResult.mentionedAgentIds) {
               if (!participatedAgents.has(agentId) && !nextRoundAgentIds.includes(agentId)) {
                 nextRoundAgentIds.push(agentId);
               }
@@ -1450,8 +1462,9 @@ async function processSubAgentMessage(params: {
   dingtalkConfig: DingTalkConfig;
   sessionWebhook: string;
   participatedAgents?: string[]; // Agents already in this conversation
+  discussionLog?: Array<{ agentName: string; text: string }>; // Accumulated discussion history
   log?: any;
-}): Promise<string[]> {
+}): Promise<SubAgentResult> {
   const {
     cfg,
     accountId,
@@ -1498,9 +1511,10 @@ async function processSubAgentMessage(params: {
     historyContext = getGroupHistoryContext(mainStorePath, baseRoute.sessionKey, 20, log);
   }
 
-  // === 4. Build message context with @ hint and history ===
+  // === 4. Build message context with @ hint, history, and discussion log ===
+  const discussionContext = buildDiscussionContext(params.discussionLog || []);
   const contextHint = `[你被 @ 为"${agentMatch.matchedName}"]\n\n`;
-  const inboundText = contextHint + historyContext + content.text;
+  const inboundText = contextHint + historyContext + discussionContext + content.text;
 
   // Agent 身份前缀，用于在群聊历史中标识消息来源
   const agentIdentityPrefix = `[${agentMatch.matchedName}] `;
@@ -1638,5 +1652,9 @@ async function processSubAgentMessage(params: {
     );
   }
 
-  return mentionedAgentIds;
+  return {
+    agentName: agentMatch.matchedName,
+    replyText: fullReplyText,
+    mentionedAgentIds,
+  };
 }
