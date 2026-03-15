@@ -465,38 +465,12 @@ const extractedContent = { ...extractMessageContent(data) };
         peer: { kind: sessionPeer.kind, id: sessionPeer.peerId },
       });
 
-  // ==================== @Sub-Agent 处理 ====================
-  /**
-   * @technical-debt Multi-agent routing implementation
-   *
-   * This @mention → agent routing is implemented at the channel plugin level,
-   * using framework's buildAgentSessionKey API but bypassing the bindings mechanism.
-   *
-   * Current implementation:
-   * - main agent: uses resolveAgentRoute (binding-based routing)
-   * - sub-agent: uses buildAgentSessionKey with explicit agentId
-   *
-   * Ideally, multi-agent @mention routing should be a framework capability:
-   * - Framework could provide @mention → agentId mapping as a built-in feature
-   * - This would integrate with bindings for consistent routing behavior
-   * - Future OpenClaw native support may require migration
-   */
-  // Skip @sub-agent detection when already in sub-agent mode
-  if (subAgentOptions) {
-    log?.debug?.(
-      `[DingTalk] Sub-agent mode: agentId=${subAgentOptions.agentId} responsePrefix=${subAgentOptions.responsePrefix}`,
-    );
-    // Continue to main message handling logic
-  } else {
-    // 检测是否有 @sub-agent 需要处理
+  // ==================== @Sub-Agent 路由 ====================
+  // Skip when already in sub-agent mode (recursive call)
+  if (!subAgentOptions) {
     const atMentions = extractedContent.atMentions || [];
     const atUserDingtalkIds = extractedContent.atUserDingtalkIds;
-    // /learn 命令统一由 main agent 处理，不路由到 sub-agent
-    const parsedLearnCommand = parseLearnCommand(extractedContent.text);
-    const isLearnCommand = parsedLearnCommand.scope !== "unknown";
-    log?.info?.(
-      `[DingTalk] Sub-agent check: isGroup=${isGroup} atMentions=${JSON.stringify(atMentions)} atUserDingtalkIds=${atUserDingtalkIds?.length || 0} agentsList=${cfg.agents?.list?.length || 0} isLearnCommand=${isLearnCommand}`,
-    );
+    const isLearnCommand = parseLearnCommand(extractedContent.text).scope !== "unknown";
     if (
       isGroup &&
       atMentions.length > 0 &&
@@ -535,9 +509,7 @@ const extractedContent = { ...extractMessageContent(data) };
               cfg,
               accountId,
               data,
-              content: extractedContent,
               agentMatch,
-              baseRoute: route,
               dingtalkConfig,
               sessionWebhook,
               log,
@@ -581,7 +553,7 @@ const extractedContent = { ...extractMessageContent(data) };
       }
     }
   }
-  // ==================== End @Sub-Agent 处理 ====================
+  // ==================== End @Sub-Agent 路由 ====================
 
   // Route resolved before media download for session context and routing metadata.
   const storePath = rt.channel.session.resolveStorePath(cfg.session?.store, {
@@ -1722,80 +1694,22 @@ const extractedContent = { ...extractMessageContent(data) };
 // ==================== @Sub-Agent 处理函数 ====================
 
 /**
- * Process a single sub-agent message by calling handleDingTalkMessage with agent-specific options.
- *
- * This approach reuses the main message handling logic, ensuring feature parity:
- * - Media download/upload
- * - Quoted message handling
- * - AI Card mode support
- * - Feedback learning integration
- *
- * @param params - Sub-agent message parameters
- *
- * @remarks
- * Design decisions to avoid reentry risks:
- *
- * 1. **Session lock**: Each sub-agent call acquires its own lock because sub-agent
- *    sessions have different session keys (different agentId). No deadlock risk.
- *
- * 2. **Media download**: Receives `preDownloadedMedia` from outer call to avoid downloading
- *    the same media multiple times when processing multiple sub-agents.
- *
- * 3. **sessionWebhook reuse**: DingTalk sessionWebhooks may have usage constraints.
- *    Multiple sequential uses of the same webhook could fail silently for later agents.
- *    This is a known limitation - consider webhook refresh if issues arise.
+ * Route a message to a specific sub-agent by recursively calling handleDingTalkMessage.
+ * Reuses the full message handling pipeline (media, cards, learning, etc.).
+ * Group auth is already checked by the outer call; each sub-agent acquires its own session lock.
  */
 async function processSubAgentMessage(params: {
   cfg: OpenClawConfig;
   accountId: string;
   data: DingTalkInboundMessage;
-  content: ReturnType<typeof extractMessageContent>;
   agentMatch: AgentNameMatch;
-  baseRoute: { agentId: string; sessionKey: string; mainSessionKey: string };
   dingtalkConfig: DingTalkConfig;
   sessionWebhook: string;
   log?: any;
-  /** Pre-downloaded media from outer call to avoid duplication */
   preDownloadedMedia?: { mediaPath?: string; mediaType?: string };
 }): Promise<void> {
-  const {
-    cfg,
-    accountId,
-    data,
-    agentMatch,
-    dingtalkConfig,
-    sessionWebhook,
-    log,
-    preDownloadedMedia,
-  } = params;
+  const { cfg, accountId, data, agentMatch, dingtalkConfig, sessionWebhook, log, preDownloadedMedia } = params;
 
-  // 钉钉 conversationType: "1" = 单聊, "2" = 群聊
-  const isGroup = data.conversationType !== "1";
-  const groupId = data.conversationId;
-
-  // 群聊权限检查
-  if (isGroup) {
-    const groupPolicy = dingtalkConfig.groupPolicy || "open";
-    const allowFrom = dingtalkConfig.allowFrom || [];
-
-    if (groupPolicy === "allowlist") {
-      const normalizedAllowFrom = normalizeAllowFrom(allowFrom);
-      const isAllowed = isSenderGroupAllowed({ allow: normalizedAllowFrom, groupId });
-
-      if (!isAllowed) {
-        log?.debug?.(
-          `[DingTalk] Sub-agent ${agentMatch.agentId} blocked: groupId=${groupId} not in allowlist (groupPolicy=allowlist)`,
-        );
-        return;
-      }
-    }
-  }
-
-  // Agent identity prefix for response
-  const agentIdentityPrefix = `[${agentMatch.matchedName}] `;
-
-  // Call main handler with sub-agent options.
-  // Each sub-agent acquires its own session lock (different agentId = different session key).
   await handleDingTalkMessage({
     cfg,
     accountId,
@@ -1805,7 +1719,7 @@ async function processSubAgentMessage(params: {
     dingtalkConfig,
     subAgentOptions: {
       agentId: agentMatch.agentId,
-      responsePrefix: agentIdentityPrefix,
+      responsePrefix: `[${agentMatch.matchedName}] `,
       matchedName: agentMatch.matchedName,
     },
     preDownloadedMedia,
