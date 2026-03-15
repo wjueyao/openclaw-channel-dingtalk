@@ -76,9 +76,9 @@ export function createCardDraftController(params: {
             }
             if (text) {
                 // Heuristic: runtime resets payload.text per assistant turn
-                // (e.g. after a tool call). A shorter text signals a new turn;
-                // preserve the previously sent card content as a prefix.
-                if (text.length < lastPartialLen && lastSentContent) {
+                // (e.g. after a tool call). A dramatic length drop (>50%)
+                // signals a new turn; minor trimming is ignored.
+                if (text.length < lastPartialLen * 0.5 && lastSentContent) {
                     answerPrefix = lastSentContent + "\n\n";
                 }
                 lastPartialLen = text.length;

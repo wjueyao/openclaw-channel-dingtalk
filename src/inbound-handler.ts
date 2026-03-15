@@ -1374,7 +1374,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
           },
         },
         replyOptions: {
-          disableBlockStreaming: controller ? true : undefined,
+          disableBlockStreaming: dingtalkConfig.cardRealTimeStream && controller ? true : undefined,
 
           onPartialReply: dingtalkConfig.cardRealTimeStream && controller
             ? (payload: ReplyStreamPayload) => {
