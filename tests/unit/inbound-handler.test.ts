@@ -2157,7 +2157,43 @@ describe('inbound-handler', () => {
         );
     });
 
-    it('handleDingTalkMessage does not add thinking reaction in card mode', async () => {
+    it('handleDingTalkMessage prefers native thinking reaction over standalone thinking message', async () => {
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                clientId: 'ding_client',
+                clientSecret: 'secret',
+                dmPolicy: 'open',
+                messageType: 'markdown',
+                showThinking: true,
+                showThinkingReaction: true,
+            } as any,
+            data: {
+                msgId: 'm5_reaction_prefer',
+                msgtype: 'text',
+                text: { content: 'hello' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(mockedAxiosPost).toHaveBeenCalledTimes(2);
+        const sentTexts = shared.sendMessageMock.mock.calls.map((call: any[]) => String(call[2] ?? ''));
+        expect(sentTexts.some((text: string) => text.includes('思考中'))).toBe(false);
+    });
+
+    it('handleDingTalkMessage adds thinking reaction in card mode', async () => {
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+
         await handleDingTalkMessage({
             cfg: {},
             accountId: 'main',
@@ -2184,11 +2220,29 @@ describe('inbound-handler', () => {
             },
         } as any);
 
-        expect(mockedAxiosPost).not.toHaveBeenCalled();
+        expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+            1,
+            'https://api.dingtalk.com/v1.0/robot/emotion/reply',
+            expect.objectContaining({
+                openMsgId: 'm5_card_reaction',
+                openConversationId: 'cid_ok',
+            }),
+            expect.any(Object),
+        );
+        expect(mockedAxiosPost).toHaveBeenNthCalledWith(
+            2,
+            'https://api.dingtalk.com/v1.0/robot/emotion/recall',
+            expect.objectContaining({
+                openMsgId: 'm5_card_reaction',
+                openConversationId: 'cid_ok',
+            }),
+            expect.any(Object),
+        );
     });
 
-    it('handleDingTalkMessage does not add thinking reaction when configured card mode falls back', async () => {
+    it('handleDingTalkMessage keeps thinking reaction when configured card mode falls back', async () => {
         shared.createAICardMock.mockResolvedValueOnce(null);
+        mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
 
         await handleDingTalkMessage({
             cfg: {},
@@ -2216,8 +2270,8 @@ describe('inbound-handler', () => {
             },
         } as any);
 
+        expect(mockedAxiosPost).toHaveBeenCalledTimes(2);
         expect(shared.sendMessageMock).toHaveBeenCalled();
-        expect(mockedAxiosPost).not.toHaveBeenCalled();
     });
 
     it('handleDingTalkMessage continues when thinking reaction attach fails', async () => {

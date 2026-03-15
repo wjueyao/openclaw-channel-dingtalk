@@ -1325,8 +1325,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
   log?.info?.(`[DingTalk] Inbound: from=${senderName} text="${content.text.slice(0, 50)}..."`);
 
-  const shouldShowThinkingReaction =
-    dingtalkConfig.messageType !== "card" && dingtalkConfig.showThinkingReaction === true;
+  const shouldShowThinkingReaction = dingtalkConfig.showThinkingReaction === true;
   let thinkingReactionAttached = false;
   try {
     if (shouldShowThinkingReaction) {
@@ -1347,7 +1346,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     const releaseSessionLock = await acquireSessionLock(route.sessionKey);
     try {
       // 4) Optional "thinking..." feedback (markdown mode only).
-      if (dingtalkConfig.showThinking !== false) {
+      if (!shouldShowThinkingReaction && dingtalkConfig.showThinking !== false) {
         let thinkingText = (dingtalkConfig.thinkingMessage || "").trim() || DEFAULT_THINKING_MESSAGE;
         if (thinkingText === "emoji") {
           thinkingText = classifySentenceWithEmoji(content.text).emoji;
