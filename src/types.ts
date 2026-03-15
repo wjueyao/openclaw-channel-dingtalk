@@ -397,8 +397,6 @@ export interface SubAgentOptions {
   responsePrefix: string;
   /** The matched agent name */
   matchedName: string;
-  /** Group chat history context to prepend to extracted message text */
-  historyContext?: string;
 }
 
 /**

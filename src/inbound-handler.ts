@@ -49,7 +49,6 @@ import type { AgentNameMatch, DingTalkConfig, DingTalkInboundMessage, HandleDing
 import { AICardStatus } from "./types";
 import { createCardDraftController } from "./card-draft-controller";
 import { acquireSessionLock } from "./session-lock";
-import { getGroupHistoryContext } from "./session-history";
 import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-cache";
 import { downloadGroupFile, getUnionIdByStaffId, resolveQuotedFile } from "./quoted-file-service";
 import classifySentenceWithEmoji from "./classifyWithEmoji";
@@ -296,15 +295,10 @@ const extractedContent = { ...extractMessageContent(data) };
     return;
   }
 
-  // Add context hint and history context for sub-agent mode
-  // Note: We clone extractedContent above to avoid polluting the original
-  // extractMessageContent result, which may be used for quote journal entry.
-  // History context is injected here (after extractMessageContent) so it works
-  // for all message types (text, richText, etc.), not just data.text.content.
+  // Add context hint for sub-agent mode
   if (subAgentOptions) {
     const contextHint = `[你被 @ 为"${subAgentOptions.matchedName}"]\n\n`;
-    const historyPrefix = subAgentOptions.historyContext || "";
-    extractedContent.text = historyPrefix + contextHint + extractedContent.text;
+    extractedContent.text = contextHint + extractedContent.text;
   }
 
   const isDirect = data.conversationType === "1";
@@ -1750,10 +1744,6 @@ const extractedContent = { ...extractMessageContent(data) };
  * 3. **sessionWebhook reuse**: DingTalk sessionWebhooks may have usage constraints.
  *    Multiple sequential uses of the same webhook could fail silently for later agents.
  *    This is a known limitation - consider webhook refresh if issues arise.
- *
- * 4. **History context**: Passed via `subAgentOptions.historyContext` so it is injected
- *    after `extractMessageContent()`, which works for all message types (text, richText, etc.)
- *    rather than only modifying `data.text.content`.
  */
 async function processSubAgentMessage(params: {
   cfg: OpenClawConfig;
@@ -1801,22 +1791,10 @@ async function processSubAgentMessage(params: {
     }
   }
 
-  // Get group chat history context for injection via subAgentOptions
-  let historyContext = "";
-  if (isGroup) {
-    const rt = getDingTalkRuntime();
-    const mainStorePath = rt.channel.session.resolveStorePath(cfg.session?.store, {
-      agentId: params.baseRoute.agentId,
-    });
-    historyContext = await getGroupHistoryContext(mainStorePath, params.baseRoute.sessionKey, 10, log);
-  }
-
   // Agent identity prefix for response
   const agentIdentityPrefix = `[${agentMatch.matchedName}] `;
 
   // Call main handler with sub-agent options.
-  // History context is passed via subAgentOptions and injected after extractMessageContent(),
-  // so it works for all message types (text, richText, picture, etc.).
   // Each sub-agent acquires its own session lock (different agentId = different session key).
   await handleDingTalkMessage({
     cfg,
@@ -1829,7 +1807,6 @@ async function processSubAgentMessage(params: {
       agentId: agentMatch.agentId,
       responsePrefix: agentIdentityPrefix,
       matchedName: agentMatch.matchedName,
-      historyContext: historyContext || undefined,
     },
     preDownloadedMedia,
   });
