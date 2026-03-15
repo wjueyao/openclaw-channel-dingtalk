@@ -394,6 +394,8 @@ export interface SubAgentOptions {
   responsePrefix: string;
   /** The matched agent name */
   matchedName: string;
+  /** Group chat history context to prepend to extracted message text */
+  historyContext?: string;
 }
 
 /**
@@ -411,11 +413,6 @@ export interface HandleDingTalkMessageParams {
    * This enables reuse of the main message handling logic for sub-agents.
    */
   subAgentOptions?: SubAgentOptions;
-  /**
-   * Skip session lock acquisition (for recursive sub-agent calls).
-   * When true, the caller is responsible for ensuring proper serialization.
-   */
-  skipSessionLock?: boolean;
   /**
    * Pre-downloaded media for sub-agent calls.
    * When set, skips media download to avoid duplication in recursive calls.

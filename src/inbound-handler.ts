@@ -292,12 +292,15 @@ const extractedContent = { ...extractMessageContent(data) };
     return;
   }
 
-  // Add context hint for sub-agent mode
+  // Add context hint and history context for sub-agent mode
   // Note: We clone extractedContent above to avoid polluting the original
-  // extractMessageContent result, which may be used for quote journal entry
+  // extractMessageContent result, which may be used for quote journal entry.
+  // History context is injected here (after extractMessageContent) so it works
+  // for all message types (text, richText, etc.), not just data.text.content.
   if (subAgentOptions) {
     const contextHint = `[你被 @ 为"${subAgentOptions.matchedName}"]\n\n`;
-    extractedContent.text = contextHint + extractedContent.text;
+    const historyPrefix = subAgentOptions.historyContext || "";
+    extractedContent.text = historyPrefix + contextHint + extractedContent.text;
   }
 
   const isDirect = data.conversationType === "1";
@@ -439,17 +442,22 @@ const extractedContent = { ...extractMessageContent(data) };
     config: dingtalkConfig,
   });
 
-  // Resolve route: use sub-agent ID if specified, otherwise use framework routing
+  // Resolve route: use sub-agent ID if specified, otherwise use framework routing.
+  // For sub-agents we use the public buildAgentSessionKey API with an explicit agentId,
+  // bypassing binding-based resolution (resolveAgentRoute) which cannot accept a forced agentId.
   const route = subAgentOptions
     ? {
         agentId: subAgentOptions.agentId,
-        sessionKey: buildAgentSpecificSessionKey({
-          cfg,
-          accountId,
-          agentId: subAgentOptions.agentId,
-          peerKind: sessionPeer.kind,
-          peerId: sessionPeer.peerId,
-        }),
+        sessionKey: rt.channel.routing
+          .buildAgentSessionKey({
+            agentId: subAgentOptions.agentId,
+            channel: "dingtalk",
+            accountId,
+            peer: { kind: sessionPeer.kind, id: sessionPeer.peerId },
+            dmScope: cfg.session?.dmScope,
+            identityLinks: cfg.session?.identityLinks,
+          })
+          .toLowerCase(),
         mainSessionKey: "", // Not used in sub-agent mode
       }
     : rt.channel.routing.resolveAgentRoute({
@@ -1395,10 +1403,9 @@ const extractedContent = { ...extractMessageContent(data) };
   // Serialize dispatchReply + card finalize per session to prevent the runtime
   // from receiving concurrent dispatch calls on the same session key, which
   // causes empty replies for all but the first caller.
-  // Skip lock acquisition for sub-agent calls (caller holds the lock already).
-  const releaseSessionLock = params.skipSessionLock
-    ? () => {}
-    : await acquireSessionLock(route.sessionKey);
+  // Each sub-agent call acquires its own lock since sub-agent sessions have
+  // different session keys (different agentId), so no deadlock risk.
+  const releaseSessionLock = await acquireSessionLock(route.sessionKey);
   try {
     // 4) Optional "thinking..." feedback (markdown mode only).
     if (dingtalkConfig.showThinking !== false) {
@@ -1605,29 +1612,6 @@ const extractedContent = { ...extractMessageContent(data) };
 // ==================== @Sub-Agent 处理函数 ====================
 
 /**
- * Build session key for a specific agent
- */
-function buildAgentSpecificSessionKey(params: {
-  cfg: OpenClawConfig;
-  accountId: string;
-  agentId: string;
-  peerKind: "direct" | "group";
-  peerId: string;
-}): string {
-  const rt = getDingTalkRuntime();
-  return rt.channel.routing
-    .buildAgentSessionKey({
-      agentId: params.agentId,
-      channel: "dingtalk",
-      accountId: params.accountId,
-      peer: { kind: params.peerKind, id: params.peerId },
-      dmScope: params.cfg.session?.dmScope,
-      identityLinks: params.cfg.session?.identityLinks,
-    })
-    .toLowerCase();
-}
-
-/**
  * Process a single sub-agent message by calling handleDingTalkMessage with agent-specific options.
  *
  * This approach reuses the main message handling logic, ensuring feature parity:
@@ -1641,8 +1625,8 @@ function buildAgentSpecificSessionKey(params: {
  * @remarks
  * Design decisions to avoid reentry risks:
  *
- * 1. **Session lock**: Uses `skipSessionLock: true` in recursive call because the outer
- *    call already holds the lock. This prevents deadlock with the non-reentrant session lock.
+ * 1. **Session lock**: Each sub-agent call acquires its own lock because sub-agent
+ *    sessions have different session keys (different agentId). No deadlock risk.
  *
  * 2. **Media download**: Receives `preDownloadedMedia` from outer call to avoid downloading
  *    the same media multiple times when processing multiple sub-agents.
@@ -1650,6 +1634,10 @@ function buildAgentSpecificSessionKey(params: {
  * 3. **sessionWebhook reuse**: DingTalk sessionWebhooks may have usage constraints.
  *    Multiple sequential uses of the same webhook could fail silently for later agents.
  *    This is a known limitation - consider webhook refresh if issues arise.
+ *
+ * 4. **History context**: Passed via `subAgentOptions.historyContext` so it is injected
+ *    after `extractMessageContent()`, which works for all message types (text, richText, etc.)
+ *    rather than only modifying `data.text.content`.
  */
 async function processSubAgentMessage(params: {
   cfg: OpenClawConfig;
@@ -1697,7 +1685,7 @@ async function processSubAgentMessage(params: {
     }
   }
 
-  // Get group chat history context
+  // Get group chat history context for injection via subAgentOptions
   let historyContext = "";
   if (isGroup) {
     const rt = getDingTalkRuntime();
@@ -1707,29 +1695,17 @@ async function processSubAgentMessage(params: {
     historyContext = await getGroupHistoryContext(mainStorePath, params.baseRoute.sessionKey, 10, log);
   }
 
-  // Add history context to message text
-  const originalText = data.text?.content || "";
-  const enhancedText = historyContext + originalText;
-
-  // Create modified data with enhanced text
-  const modifiedData = {
-    ...data,
-    text: {
-      ...data.text,
-      content: enhancedText,
-    },
-  };
-
   // Agent identity prefix for response
   const agentIdentityPrefix = `[${agentMatch.matchedName}] `;
 
-  // Call main handler with sub-agent options
-  // Skip session lock because the outer call already holds it
-  // Pass preDownloadedMedia to avoid re-downloading in recursive calls
+  // Call main handler with sub-agent options.
+  // History context is passed via subAgentOptions and injected after extractMessageContent(),
+  // so it works for all message types (text, richText, picture, etc.).
+  // Each sub-agent acquires its own session lock (different agentId = different session key).
   await handleDingTalkMessage({
     cfg,
     accountId,
-    data: modifiedData,
+    data,
     sessionWebhook,
     log,
     dingtalkConfig,
@@ -1737,8 +1713,8 @@ async function processSubAgentMessage(params: {
       agentId: agentMatch.agentId,
       responsePrefix: agentIdentityPrefix,
       matchedName: agentMatch.matchedName,
+      historyContext: historyContext || undefined,
     },
-    skipSessionLock: true,
     preDownloadedMedia,
   });
 }

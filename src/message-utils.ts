@@ -331,7 +331,10 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
      * 对于 richText 消息，part.type === "at" 会提供 atName + atUserId，
      * 可以准确区分真人和 agent。
      */
-    const atMatches = textContent.matchAll(/@([^\s@]+)/g);
+    // Strip quoted prefix before extracting @mentions to avoid matching @names inside quotes.
+    // Quoted prefix pattern: [引用消息: "..."] or [引用图片] etc. at the start of the text.
+    const textForAtExtraction = textContent.replace(/^\[引用[^\]]*\]\s*/, "");
+    const atMatches = textForAtExtraction.matchAll(/@([^\s@]+)/g);
     for (const match of atMatches) {
       atMentions.push({ name: match[1].trim() });
     }
