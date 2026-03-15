@@ -1580,14 +1580,6 @@ const extractedContent = { ...extractMessageContent(data) };
 
         const finalText = queuedFinal ? finalContent.map(v => v.trim()).filter(v => v.length > 0).join("\n\n") : 
           currentAICard.lastStreamedContent || "✅ Done";
-        if (isUnhandledStopReasonText(finalText)) {
-          log?.warn?.(
-            `[DingTalk] Suppressed stop reason from AI Card final content: ${finalText}`,
-          );
-          currentAICard.state = AICardStatus.FINISHED;
-          currentAICard.lastUpdated = Date.now();
-          return;
-        }
         await finishAICard(currentAICard, finalText, log);
       } catch (err: any) {
         log?.debug?.(`[DingTalk] AI Card finalization failed: ${err.message}`);

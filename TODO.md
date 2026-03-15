@@ -14,6 +14,7 @@
 - [#187 待机太久出现不可用](https://github.com/soimy/openclaw-channel-dingtalk/issues/187)
 - [#302 TCP half-open问题](https://github.com/soimy/openclaw-channel-dingtalk/issues/302)
 - [#303 Connection attempt x failed: protocol mismatch](https://github.com/soimy/openclaw-channel-dingtalk/issues/303)
+- [#289 dingtalk connection error 503 & 400](https://github.com/soimy/openclaw-channel-dingtalk/issues/289)
 
 相关 PRs：
 - [#96 fix(dingtalk): harden inbound message handling](https://github.com/soimy/openclaw-channel-dingtalk/pull/96)
@@ -21,6 +22,8 @@
 - [#183 fix(dingtalk): add stale lock cleanup on send path](https://github.com/soimy/openclaw-channel-dingtalk/pull/183)
 - [#249 improve DingTalk connection troubleshooting](https://github.com/soimy/openclaw-channel-dingtalk/pull/249)
 - [#313 fix: lazy-preload peer ID registry to fix 400 errors in delivery queue](https://github.com/soimy/openclaw-channel-dingtalk/pull/313)
+- [#323 fix: increase health check interval/grace to prevent reconnect storm](https://github.com/soimy/openclaw-channel-dingtalk/pull/323)
+- [#325 test(connection-manager): align health check timings with new 60s/30s constants](https://github.com/soimy/openclaw-channel-dingtalk/pull/325)
 
 任务：
 - [ ] 复核现有稳定性问题是否仍可复现
@@ -29,6 +32,8 @@
 - [ ] 形成“已收敛 / 未收敛 / 需新增 issue”结论
 - [ ] 验证 `#313` 在“冷启动后立即主动发送”场景的稳定性
 - [ ] 收敛 `#302/#303` 的复现路径与排障步骤
+- [ ] 验证 `#323/#325` 后长待机与恢复窗口是否仍出现“间歇性收不到消息”（关联 `#104` 新增反馈）
+- [ ] 结合 `#104` 新评论（指向 stream-sdk-nodejs#13）补充“连接存活但收不到入站事件”的链路级排查与可观测性
 
 ### 2. AI Card 发送链路一致性
 相关 Issues：
@@ -39,12 +44,18 @@
 - [#319 bug: sessionWebhook 过期后无 fallback，长任务回复静默丢失](https://github.com/soimy/openclaw-channel-dingtalk/issues/319)
 - [#321 bug: deliver 回调中 payload.text 为空时直接 return，导致媒体消息无文字说明](https://github.com/soimy/openclaw-channel-dingtalk/issues/321)
 - [#290 bug: reasoning token 内容重复堆叠进 AI card](https://github.com/soimy/openclaw-channel-dingtalk/issues/290)
+- [#282 reasoning没有结束状态](https://github.com/soimy/openclaw-channel-dingtalk/issues/282)
+- [#208 当 LiteLLM 返回 429/503 错误时，机器人没有回复用户任何信息，希望能推送错误提示](https://github.com/soimy/openclaw-channel-dingtalk/issues/208)
 
 相关 PRs：
 - [#191 serialize send pipeline with session-scoped dispatch lock](https://github.com/soimy/openclaw-channel-dingtalk/pull/191)
 - [#179 hardening send path](https://github.com/soimy/openclaw-channel-dingtalk/pull/179)
 - [#291 fix(card): use replace mode for reasoning stream to prevent content duplication](https://github.com/soimy/openclaw-channel-dingtalk/pull/291)
 - [#311 fix: deliver MEDIA attachments in inbound reply handler](https://github.com/soimy/openclaw-channel-dingtalk/pull/311)
+- [#326 feat: support multiple final chunk](https://github.com/soimy/openclaw-channel-dingtalk/pull/326)
+- [#327 fix(dingtalk): restore non-session inbound logic regressed by #307](https://github.com/soimy/openclaw-channel-dingtalk/pull/327)
+- [#231 fix: don't suppress stop reason](https://github.com/soimy/openclaw-channel-dingtalk/pull/231)
+- [#295 feat(dingtalk): 增加异步回执模式](https://github.com/soimy/openclaw-channel-dingtalk/pull/295)
 
 任务：
 - [ ] 回归 Done 提前结束问题
@@ -56,6 +67,10 @@
 - [ ] 回归媒体消息 `仅媒体/仅文本/媒体+文本` 的 deliver 组合行为（#321/#311）
 - [ ] 评估并实现 `card.stream` 节流/合并策略，降低限流风险（#318）
 - [ ] 复核 reasoning 重复堆叠修复是否稳定（#290/#291）
+- [ ] 回归“多个 final chunk + 工具报错”场景，确认最终输出不会被吞（#326）
+- [ ] 复核 `#327` 恢复后的 reply-stream 契约是否完整（`cardUpdateMode=replace`、`payload.text` 路径）
+- [ ] 复核 `#231` 合并后的真实净变更与 `#208` 关闭结论是否一致，避免“状态已关闭但用户侧仍无错误提示”
+- [ ] 跟进 `#311` 的 review blocking + `main` 基线漂移，先 rebase 再验证 deliver 链路
 
 ### 3. 文件上传 / 文件读取 / 文件预览 / 大文件链路
 相关 Issues：
@@ -67,6 +82,7 @@
 
 相关 PRs：
 - [#68 feat(dingtalk): implement file uploading with send image, video and file support](https://github.com/soimy/openclaw-channel-dingtalk/pull/68)
+- [#298 feat(dingtalk): 支持入站附件正文抽取](https://github.com/soimy/openclaw-channel-dingtalk/pull/298)
 
 任务：
 - [ ] 核对基础文件发送能力的当前边界
@@ -74,6 +90,7 @@
 - [ ] 为每个子任务补最小复现和验收标准
 - [ ] 明确哪些属于补尾，哪些需要新增开发
 - [ ] 复核 `#315` 场景在当前版本中的行为与诊断提示是否一致
+- [ ] 评估 `#298` 的附件正文抽取边界（类型/长度/失败回退）与现有文件链路兼容性
 
 ### 4. 图片 / 语音 / 媒体链路补强
 相关 Issues：
@@ -87,6 +104,7 @@
 - [#200 support asVoice for media messages](https://github.com/soimy/openclaw-channel-dingtalk/pull/200)
 - [#181 add mediaMaxMb override for inbound media size limit](https://github.com/soimy/openclaw-channel-dingtalk/pull/181)
 - [#311 fix: deliver MEDIA attachments in inbound reply handler](https://github.com/soimy/openclaw-channel-dingtalk/pull/311)
+- [#248 fix(dingtalk): prepare mediaUrl in action send before upload](https://github.com/soimy/openclaw-channel-dingtalk/pull/248)
 
 任务：
 - [ ] 回归本地图片发送
@@ -95,6 +113,7 @@
 - [ ] 评估 AI Card 内媒体一体化展示是否值得推进
 - [ ] 明确哪些项已完成、哪些项仍待开发
 - [ ] 回归 Windows 绝对路径/相对路径下图片与文件发送（#316, #241）
+- [ ] 跟进 `#248` 的 `mediaUrl` 路径归一化修复，并在 rebase 到最新 `main` 后回归远端 URL/本地路径分流
 
 ---
 
@@ -104,8 +123,8 @@
 相关 Issues：
 - [#126 引用消息支持](https://github.com/soimy/openclaw-channel-dingtalk/issues/126)
 - [#205 chatRecord 消息显示空白](https://github.com/soimy/openclaw-channel-dingtalk/issues/205)
-- [#208 优化 chatRecord 空内容提示](https://github.com/soimy/openclaw-channel-dingtalk/issues/208)
 - [#227 forward/chatRecord 相关问题](https://github.com/soimy/openclaw-channel-dingtalk/issues/227)
+- [#286 不支持识别钉群中富文本引用吗？](https://github.com/soimy/openclaw-channel-dingtalk/issues/286)
 
 相关 PRs：
 - [#128 feat(dingtalk): support quoted messages](https://github.com/soimy/openclaw-channel-dingtalk/pull/128)
@@ -121,6 +140,7 @@
 - [ ] 明确 chatRecord 空内容提示策略
 - [ ] 明确转发记录展示策略
 - [ ] 做一次集中回归并沉淀结论
+- [ ] 补充富文本 markdown/代码块引用场景回归，确认引用内容传递边界（#286）
 
 ### 6. 建立 Issue 提交标准化
 任务：
@@ -161,6 +181,8 @@
 - [#137 refactor(dingtalk): modularize channel implementation](https://github.com/soimy/openclaw-channel-dingtalk/pull/137)
 - [#307 feat(dingtalk): 支持 owner 控制群共享会话别名](https://github.com/soimy/openclaw-channel-dingtalk/pull/307)
 - [#317 feat(dingtalk): add @sub-agent basic support for group chat multi-agent scenarios](https://github.com/soimy/openclaw-channel-dingtalk/pull/317)
+- [#324 fix(config): resolve dashboard Unsupported schema node for #304](https://github.com/soimy/openclaw-channel-dingtalk/pull/324)
+- [#327 fix(dingtalk): restore non-session inbound logic regressed by #307](https://github.com/soimy/openclaw-channel-dingtalk/pull/327)
 
 任务：
 - [ ] 补齐配置示例
@@ -169,6 +191,8 @@
 - [ ] 补齐文档说明
 - [ ] 明确 `session-alias` 与框架 routing bindings 的职责边界（#307）
 - [ ] 评估 `@sub-agent` 能力与现有路由模型整合方案（#317）
+- [ ] 复核 dashboard schema 渲染与 legacy key 归一化行为在 UI/Raw 配置路径的一致性（#304/#324）
+- [ ] 跟进 `#317` 冲突与 review blocking 项，避免再次回归 `#327` 已修复的 inbound 能力
 
 ### 9. 支持群聊 @人 / @all
 相关 Issues：
@@ -208,6 +232,8 @@
 相关 PRs：
 - [#119 AI Card thinking/tool use streaming](https://github.com/soimy/openclaw-channel-dingtalk/pull/119)
 - [#214 make thinking message configurable](https://github.com/soimy/openclaw-channel-dingtalk/pull/214)
+- [#322 fix: wire onToolResult to enable verbose tool streaming in card mode](https://github.com/soimy/openclaw-channel-dingtalk/pull/322)
+- [#332 feat(dingtalk): add native thinking reaction feedback](https://github.com/soimy/openclaw-channel-dingtalk/pull/332)
 
 任务：
 - [ ] 明确 thinking 展示可配置项
@@ -216,6 +242,9 @@
 - [ ] 补齐默认值与文档说明
 - [ ] 评估卡片模板多参数/多按钮交互支持方案（#312）
 - [ ] 明确 `/reasoning stream` 在钉钉通道的提示与降级策略（#320）
+- [ ] 回归 reasoning 结束态在钉钉卡片上的收敛行为（#282）
+- [ ] 回归 `/verbose on` 下 tool result 流式展示在卡片模式的可见性（#322）
+- [ ] 复核 `#332`“思考中表情”在钉钉 UI 延迟显示场景下的撤回收敛行为与 API 调用成本
 
 ---
 
@@ -245,6 +274,8 @@
 相关 PRs：
 - [#175 docs: align README cardTemplateKey default](https://github.com/soimy/openclaw-channel-dingtalk/pull/175)
 - [#199 docs: align onboarding and runtime defaults](https://github.com/soimy/openclaw-channel-dingtalk/pull/199)
+- [#301 feat(dingtalk): 增加钉钉文档 gateway methods](https://github.com/soimy/openclaw-channel-dingtalk/pull/301)
+- [#328 docs: add multi-agent multi-bot binding guide for DingTalk](https://github.com/soimy/openclaw-channel-dingtalk/pull/328)
 
 任务：
 - [ ] 补 README 截图
@@ -253,6 +284,8 @@
 - [ ] 补常见问题
 - [ ] 补排障说明
 - [ ] 增补 `400/protocol mismatch` 常见排障示例与配置核对清单（#243/#303）
+- [ ] 补充 `dingtalk.docs.*` gateway methods 的使用示例与权限/参数说明（#301）
+- [ ] 整合 `#328` 的多 bot 多 agent 绑定示例到 onboarding/FAQ，减少与 `#317` 相关配置误解
 
 ---
 

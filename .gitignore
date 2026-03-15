@@ -35,3 +35,9 @@ docs/plans/
 
 # Local debug artifacts for feedback-learning tooling
 .local/
+
+# Codex automation artifacts
+.codex-artifacts/
+
+# playwright-generated files
+.playwright*/
