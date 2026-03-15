@@ -42,6 +42,14 @@ const DingTalkAccountConfigShape = {
   /** Custom thinking message content when showThinking is enabled (markdown mode only) */
   thinkingMessage: z.string().optional().default("🤔 思考中，请稍候..."),
 
+  /** Show native DingTalk thinking reaction on the inbound message */
+  showThinkingReaction: z.boolean().optional().default(false),
+
+  /** Acknowledge user messages immediately and continue processing in the background */
+  asyncMode: z.boolean().optional().default(false),
+
+  /** Immediate session ack text used when asyncMode is enabled */
+  asyncAckText: z.string().optional().default("已收到，正在处理中，稍后回复。"),
   /** Enable debug logging */
   debug: z.boolean().optional().default(false),
 
