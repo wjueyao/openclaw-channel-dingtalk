@@ -24,6 +24,7 @@
 - [#313 fix: lazy-preload peer ID registry to fix 400 errors in delivery queue](https://github.com/soimy/openclaw-channel-dingtalk/pull/313)
 - [#323 fix: increase health check interval/grace to prevent reconnect storm](https://github.com/soimy/openclaw-channel-dingtalk/pull/323)
 - [#325 test(connection-manager): align health check timings with new 60s/30s constants](https://github.com/soimy/openclaw-channel-dingtalk/pull/325)
+- [#336 fix: avoid idle reconnects on quiet DingTalk stream connections](https://github.com/soimy/openclaw-channel-dingtalk/pull/336)
 
 任务：
 - [ ] 复核现有稳定性问题是否仍可复现
@@ -34,6 +35,7 @@
 - [ ] 收敛 `#302/#303` 的复现路径与排障步骤
 - [ ] 验证 `#323/#325` 后长待机与恢复窗口是否仍出现“间歇性收不到消息”（关联 `#104` 新增反馈）
 - [ ] 结合 `#104` 新评论（指向 stream-sdk-nodejs#13）补充“连接存活但收不到入站事件”的链路级排查与可观测性
+- [ ] 复核 `#336` 在低流量静默群聊下是否消除“空闲误重连”，并确认不影响真实断链恢复
 
 ### 2. AI Card 发送链路一致性
 相关 Issues：
@@ -56,6 +58,9 @@
 - [#327 fix(dingtalk): restore non-session inbound logic regressed by #307](https://github.com/soimy/openclaw-channel-dingtalk/pull/327)
 - [#231 fix: don't suppress stop reason](https://github.com/soimy/openclaw-channel-dingtalk/pull/231)
 - [#295 feat(dingtalk): 增加异步回执模式](https://github.com/soimy/openclaw-channel-dingtalk/pull/295)
+- [#300 feat(dingtalk): 优化 Markdown 表格发送兼容性](https://github.com/soimy/openclaw-channel-dingtalk/pull/300)
+- [#334 Revert "feat(dingtalk): 增加异步回执模式"](https://github.com/soimy/openclaw-channel-dingtalk/pull/334)
+- [#335 feat: add convertMarkdownTables config option](https://github.com/soimy/openclaw-channel-dingtalk/pull/335)
 
 任务：
 - [ ] 回归 Done 提前结束问题
@@ -70,7 +75,9 @@
 - [ ] 回归“多个 final chunk + 工具报错”场景，确认最终输出不会被吞（#326）
 - [ ] 复核 `#327` 恢复后的 reply-stream 契约是否完整（`cardUpdateMode=replace`、`payload.text` 路径）
 - [ ] 复核 `#231` 合并后的真实净变更与 `#208` 关闭结论是否一致，避免“状态已关闭但用户侧仍无错误提示”
-- [ ] 跟进 `#311` 的 review blocking + `main` 基线漂移，先 rebase 再验证 deliver 链路
+- [ ] 跟进 `#311` 的 review blocking 项，基于已 rebase 分支复核 deliver MEDIA 边界（入站回包/主动回复/卡片并行）
+- [ ] 复盘 `#334` 对 `#295` 的回滚影响，明确 async ack 是否保留为后续可选能力
+- [ ] 校验 `#300/#335` 的 markdown 表格兼容策略与默认值，避免不同钉钉客户端表现分叉
 
 ### 3. 文件上传 / 文件读取 / 文件预览 / 大文件链路
 相关 Issues：
@@ -98,6 +105,7 @@
 - [#86 在AI的流式卡片上也实现插入图片/视频音频等](https://github.com/soimy/openclaw-channel-dingtalk/issues/86)
 - [#306 钉钉无法发送图片，提示富文本（Dup #162）](https://github.com/soimy/openclaw-channel-dingtalk/issues/306)
 - [#316 钉钉机器人无法发送本地文件或者图片发给我（Dup #162）](https://github.com/soimy/openclaw-channel-dingtalk/issues/316)
+- [#333 求助为什么通过钉钉发一张图，agent只能接收到<media:image>](https://github.com/soimy/openclaw-channel-dingtalk/issues/333)
 
 相关 PRs：
 - [#182 support local image sending](https://github.com/soimy/openclaw-channel-dingtalk/pull/182)
@@ -114,6 +122,7 @@
 - [ ] 明确哪些项已完成、哪些项仍待开发
 - [ ] 回归 Windows 绝对路径/相对路径下图片与文件发送（#316, #241）
 - [ ] 跟进 `#248` 的 `mediaUrl` 路径归一化修复，并在 rebase 到最新 `main` 后回归远端 URL/本地路径分流
+- [ ] 针对 `#333` 增补 `robotCode` 缺失/错误时的启动校验与日志提示，避免仅出现 `<media:image>` 占位文本
 
 ---
 
@@ -175,6 +184,7 @@
 - [#130 多 agent 配置相关](https://github.com/soimy/openclaw-channel-dingtalk/issues/130)
 - [#132 多账号 schema / ControlUI 兼容相关](https://github.com/soimy/openclaw-channel-dingtalk/issues/132)
 - [#304 openclaw网页钉钉插件提示Unsupported schema node. Use Raw mode.](https://github.com/soimy/openclaw-channel-dingtalk/issues/304)
+- [#185 用dingtalk插件为多agent绑定不同的钉钉机器人失效](https://github.com/soimy/openclaw-channel-dingtalk/issues/185)
 
 相关 PRs：
 - [#133 feat(dingtalk): add multi-account schema support](https://github.com/soimy/openclaw-channel-dingtalk/pull/133)
@@ -193,6 +203,7 @@
 - [ ] 评估 `@sub-agent` 能力与现有路由模型整合方案（#317）
 - [ ] 复核 dashboard schema 渲染与 legacy key 归一化行为在 UI/Raw 配置路径的一致性（#304/#324）
 - [ ] 跟进 `#317` 冲突与 review blocking 项，避免再次回归 `#327` 已修复的 inbound 能力
+- [ ] 排查并修复 `#185` 反馈的多 agent workspace 绑定异常（疑似默认 `main` 绑定导致配置失效）
 
 ### 9. 支持群聊 @人 / @all
 相关 Issues：
@@ -209,6 +220,7 @@
 - [ ] 明确 @all 需求范围
 - [ ] 设计失败降级与兼容行为
 - [ ] 整理 `#288/#305` 重复诉求，收敛为 `#67` 验收标准
+- [ ] 跟进 `#305` 新增用户追问，补充当前版本可行配置与仍未覆盖场景的状态说明
 
 ### 10. 支持对话打断 / 取消任务
 相关 Issues：
@@ -276,6 +288,7 @@
 - [#199 docs: align onboarding and runtime defaults](https://github.com/soimy/openclaw-channel-dingtalk/pull/199)
 - [#301 feat(dingtalk): 增加钉钉文档 gateway methods](https://github.com/soimy/openclaw-channel-dingtalk/pull/301)
 - [#328 docs: add multi-agent multi-bot binding guide for DingTalk](https://github.com/soimy/openclaw-channel-dingtalk/pull/328)
+- [#337 refactor: deprecate legacy dingtalk debug config](https://github.com/soimy/openclaw-channel-dingtalk/pull/337)
 
 任务：
 - [ ] 补 README 截图
@@ -286,6 +299,7 @@
 - [ ] 增补 `400/protocol mismatch` 常见排障示例与配置核对清单（#243/#303）
 - [ ] 补充 `dingtalk.docs.*` gateway methods 的使用示例与权限/参数说明（#301）
 - [ ] 整合 `#328` 的多 bot 多 agent 绑定示例到 onboarding/FAQ，减少与 `#317` 相关配置误解
+- [ ] 补充 `debug` -> `dwClientDebug` 的迁移说明与兼容窗口说明（#337）
 
 ---
 

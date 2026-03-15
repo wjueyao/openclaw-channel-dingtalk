@@ -2,6 +2,7 @@ import axios from "axios";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { normalizeAllowFrom, isSenderAllowed, isSenderGroupAllowed } from "./access-control";
 import { resolveAtAgents } from "./agent-name-matcher";
+import { extractAttachmentText } from "./attachment-text-extractor";
 import { getAccessToken } from "./auth";
 import {
   createAICard,
@@ -29,6 +30,7 @@ import {
   parseLearnCommand,
 } from "./learning-command-service";
 import { extractMessageContent } from "./message-utils";
+import { prepareMediaInput, resolveOutboundMediaType } from "./media-utils";
 import { registerPeerId } from "./peer-id-registry";
 import {
   clearProactiveRiskObservationsForTest,
@@ -40,11 +42,12 @@ import {
   resolveQuotedMessageById,
 } from "./quote-journal";
 import { getDingTalkRuntime } from "./runtime";
-import { sendBySession, sendMessage } from "./send-service";
+import { sendBySession, sendMessage, sendProactiveMedia } from "./send-service";
 import { clearSessionPeerOverride, getSessionPeerOverride, setSessionPeerOverride } from "./session-peer-store";
 import { resolveDingTalkSessionPeer } from "./session-routing";
 import type { AgentNameMatch, DingTalkConfig, DingTalkInboundMessage, HandleDingTalkMessageParams, MediaFile } from "./types";
 import { AICardStatus } from "./types";
+import { createCardDraftController } from "./card-draft-controller";
 import { acquireSessionLock } from "./session-lock";
 import { getGroupHistoryContext } from "./session-history";
 import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-cache";
@@ -79,6 +82,7 @@ import { formatDingTalkErrorPayloadLog, maskSensitiveData } from "./utils";
 
 const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
 const DEFAULT_THINKING_MESSAGE = "🤔 思考中，请稍候...";
+const ATTACHMENT_TEXT_PREFIX = "[附件内容摘录]";
 const proactiveHintLastSentAt = new Map<string, number>();
 
 export function resetProactivePermissionHintStateForTest(): void {
@@ -1310,10 +1314,27 @@ const extractedContent = { ...extractMessageContent(data) };
     // Card cache miss: prefix already contains "[引用了机器人的回复]", keep as-is.
   }
 
-  const inboundText =
+  let attachmentExtractedText: string | undefined;
+  if (mediaPath) {
+    try {
+      const extracted = await extractAttachmentText({
+        path: mediaPath,
+        mimeType: mediaType,
+        fileName: data.content?.fileName,
+      });
+      if (extracted?.text) {
+        attachmentExtractedText = `${ATTACHMENT_TEXT_PREFIX}\n${extracted.text}`;
+      }
+    } catch (err: any) {
+      log?.warn?.(`[DingTalk] Failed to extract attachment text: ${err.message}`);
+    }
+  }
+
+  const inboundBody =
     mediaPath && /<media:[^>]+>/.test(content.text)
       ? `${content.text}\n[media_path: ${mediaPath}]\n[media_type: ${mediaType || "unknown"}]`
       : content.text;
+  const inboundText = attachmentExtractedText ? `${inboundBody}\n\n${attachmentExtractedText}` : inboundBody;
   const learningEnabled = isFeedbackLearningEnabled(dingtalkConfig);
   const learningContextBlock = buildLearningContextBlock({
     enabled: learningEnabled,
@@ -1423,7 +1444,6 @@ const extractedContent = { ...extractMessageContent(data) };
             sessionWebhook,
             atUserId: !isDirect ? senderId : null,
             log,
-            card: currentAICard,
             accountId,
             storePath,
             conversationId: groupId,
@@ -1440,18 +1460,72 @@ const extractedContent = { ...extractMessageContent(data) };
       }
     }
 
-    let queuedFinal: unknown;
-    const finalContent: string[] = [];
+    const controller = useCardMode && currentAICard
+      ? createCardDraftController({ card: currentAICard, log })
+      : undefined;
+    let cardFinalized = false;
+    let finalTextForFallback: string | undefined;
+
     try {
-      const dispatchResult = await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      await rt.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
         ctx,
         cfg,
         dispatcherOptions: {
           responsePrefix: subAgentOptions?.responsePrefix || "",
           deliver: async (payload: ReplyStreamPayload, info?: ReplyChunkInfo) => {
+            async function deliverMediaAttachments(urls: string[]) {
+              for (const rawMediaUrl of urls) {
+                const preparedMedia = await prepareMediaInput(
+                  rawMediaUrl,
+                  log,
+                  dingtalkConfig.mediaUrlAllowlist,
+                );
+                try {
+                  const actualMediaPath = preparedMedia.path;
+                  const mediaType = resolveOutboundMediaType({
+                    mediaPath: actualMediaPath,
+                    asVoice: false,
+                  });
+                  if (sessionWebhook) {
+                    await sendBySession(dingtalkConfig, sessionWebhook, "", {
+                      mediaPath: actualMediaPath,
+                      mediaType,
+                      log,
+                    });
+                  } else {
+                    const sendResult = await sendProactiveMedia(
+                      dingtalkConfig,
+                      to,
+                      actualMediaPath,
+                      mediaType,
+                      {
+                        accountId,
+                        log,
+                      },
+                    );
+                    if (!sendResult.ok) {
+                      throw new Error(sendResult.error || "Media reply send failed");
+                    }
+                  }
+                } finally {
+                  await preparedMedia.cleanup?.();
+                }
+              }
+            }
+
             try {
+              const richPayload = payload as typeof payload & {
+                mediaUrl?: string;
+                mediaUrls?: string[];
+              };
               const textToSend = payload.text;
-              if (!textToSend) {
+              const mediaUrls = Array.isArray(richPayload.mediaUrls)
+                ? richPayload.mediaUrls.filter((entry: unknown) => typeof entry === "string" && entry.trim())
+                : richPayload.mediaUrl && typeof richPayload.mediaUrl === "string" && richPayload.mediaUrl.trim()
+                  ? [richPayload.mediaUrl]
+                  : [];
+
+              if ((typeof textToSend !== "string" || textToSend.length === 0) && mediaUrls.length === 0) {
                 return;
               }
 
@@ -1460,52 +1534,90 @@ const extractedContent = { ...extractMessageContent(data) };
                 return;
               }
 
+              // ---- card mode: final ----
               if (useCardMode && currentAICard && info?.kind === "final") {
-                finalContent.push(textToSend);
+                await controller!.flush();
+                await controller!.waitForInFlight();
+                controller!.stop();
+                if (mediaUrls.length > 0) {
+                  await deliverMediaAttachments(mediaUrls);
+                }
+                if (!isCardInTerminalState(currentAICard.state) && !controller!.isFailed()) {
+                  try {
+                    await finishAICard(currentAICard, textToSend, log);
+                    cardFinalized = true;
+                  } catch (finalizeErr: any) {
+                    log?.debug?.(`[DingTalk] AI Card finalization failed in deliver: ${finalizeErr.message}`);
+                    if (finalizeErr?.response?.data !== undefined) {
+                      log?.debug?.(formatDingTalkErrorPayloadLog("inbound.cardFinalize", finalizeErr.response.data));
+                    }
+                    if (currentAICard.state !== AICardStatus.FINISHED) {
+                      currentAICard.state = AICardStatus.FAILED;
+                      currentAICard.lastUpdated = Date.now();
+                    }
+                    finalTextForFallback = textToSend;
+                  }
+                } else if (currentAICard.state === AICardStatus.FINISHED) {
+                  log?.info?.("[DingTalk] Card already FINISHED before deliver(final), skipping duplicate finalize");
+                  cardFinalized = true;
+                } else {
+                  log?.info?.("[DingTalk] Card failed before deliver(final), deferring markdown fallback to post-dispatch");
+                  finalTextForFallback = textToSend;
+                }
                 return;
               }
 
+              // ---- card mode: tool ----
               if (useCardMode && currentAICard && info?.kind === "tool") {
-                if (isCardInTerminalState(currentAICard.state)) {
-                  log?.debug?.(
-                    `[DingTalk] Skipping tool stream update because card is terminal: state=${currentAICard.state}`,
-                  );
+                if (controller!.isFailed() || isCardInTerminalState(currentAICard.state)) {
+                  log?.debug?.("[DingTalk] Card failed, skipping tool result (will send full reply on final)");
                   return;
                 }
-
+                await controller!.flush();
+                await controller!.waitForInFlight();
                 log?.info?.(
                   `[DingTalk] Tool result received, streaming to AI Card: ${textToSend.slice(0, 100)}`,
                 );
                 const toolText = formatContentForCard(textToSend, "tool");
                 if (toolText) {
-                const sendResult = await sendMessage(dingtalkConfig, to, toolText, {
-                  sessionWebhook,
-                  atUserId: !isDirect ? senderId : null,
-                  log,
-                  card: currentAICard,
-                  accountId,
-                  storePath,
-                  conversationId: groupId,
-                  cardUpdateMode: "append",
-                });
+                  const sendResult = await sendMessage(dingtalkConfig, to, toolText, {
+                    sessionWebhook,
+                    atUserId: !isDirect ? senderId : null,
+                    log,
+                    card: currentAICard,
+                    accountId,
+                    storePath,
+                    conversationId: groupId,
+                    cardUpdateMode: "append",
+                  });
                   if (!sendResult.ok) {
                     throw new Error(sendResult.error || "Tool stream send failed");
                   }
-                  return;
                 }
+                return;
               }
 
-              const sendResult = await sendMessage(dingtalkConfig, to, textToSend, {
-                sessionWebhook,
-                atUserId: !isDirect ? senderId : null,
-                log,
-                card: currentAICard,
-                accountId,
-                storePath,
-                conversationId: groupId,
-              });
-              if (!sendResult.ok) {
-                throw new Error(sendResult.error || "Reply send failed");
+              // ---- media delivery (all modes) ----
+              if (mediaUrls.length > 0) {
+                await deliverMediaAttachments(mediaUrls);
+              }
+
+              // ---- non-card mode (markdown/text) ----
+              if (!useCardMode || !currentAICard) {
+                if (typeof textToSend !== "string" || textToSend.length === 0) {
+                  return;
+                }
+                const sendResult = await sendMessage(dingtalkConfig, to, textToSend, {
+                  sessionWebhook,
+                  atUserId: !isDirect ? senderId : null,
+                  log,
+                  accountId,
+                  storePath,
+                  conversationId: groupId,
+                });
+                if (!sendResult.ok) {
+                  throw new Error(sendResult.error || "Reply send failed");
+                }
               }
             } catch (err: any) {
               log?.error?.(`[DingTalk] Reply failed: ${err.message}`);
@@ -1517,70 +1629,82 @@ const extractedContent = { ...extractMessageContent(data) };
           },
         },
         replyOptions: {
-          onReasoningStream: async (payload: ReplyStreamPayload) => {
-            if (!useCardMode || !currentAICard) {
-              return;
-            }
-            if (isCardInTerminalState(currentAICard.state)) {
-              log?.debug?.(
-                `[DingTalk] Skipping thinking stream update because card is terminal: state=${currentAICard.state}`,
-              );
-              return;
-            }
-            const thinkingText = formatContentForCard(payload.text, "thinking");
-            if (!thinkingText) {
-              return;
-            }
-            try {
-              const sendResult = await sendMessage(dingtalkConfig, to, thinkingText, {
-                sessionWebhook,
-                atUserId: !isDirect ? senderId : null,
-                log,
-                card: currentAICard,
-                accountId,
-                storePath,
-                conversationId: groupId,
-                cardUpdateMode: "replace",
-              });
-              if (!sendResult.ok) {
-                throw new Error(sendResult.error || "Thinking stream send failed");
+          disableBlockStreaming: dingtalkConfig.cardRealTimeStream && controller ? true : undefined,
+
+          onPartialReply: dingtalkConfig.cardRealTimeStream && controller
+            ? (payload: ReplyStreamPayload) => {
+                if (payload.text) {
+                  controller.updateAnswer(payload.text);
+                }
               }
-            } catch (err: any) {
-              log?.debug?.(`[DingTalk] Thinking stream update failed: ${err.message}`);
-              if (err?.response?.data !== undefined) {
-                log?.debug?.(formatDingTalkErrorPayloadLog("inbound.thinkingStream", err.response.data));
+            : undefined,
+
+          onReasoningStream: controller
+            ? (payload: ReplyStreamPayload) => {
+                if (payload.text) {
+                  controller.updateReasoning(payload.text);
+                }
               }
-            }
-          },
+            : undefined,
         },
       });
-      queuedFinal = dispatchResult?.queuedFinal;
     } catch (dispatchErr: any) {
       if (useCardMode && currentAICard && !isCardInTerminalState(currentAICard.state)) {
-        try {
-          await finishAICard(currentAICard, "❌ 处理失败", log);
-        } catch (cardCloseErr: any) {
-          log?.debug?.(`[DingTalk] Failed to finalize card after dispatch error: ${cardCloseErr.message}`);
-          currentAICard.state = AICardStatus.FAILED;
-          currentAICard.lastUpdated = Date.now();
+        controller!.stop();
+        await controller!.waitForInFlight();
+        if (!cardFinalized) {
+          try {
+            await finishAICard(currentAICard, "❌ 处理失败", log);
+          } catch (cardCloseErr: any) {
+            log?.debug?.(`[DingTalk] Failed to finalize card after dispatch error: ${cardCloseErr.message}`);
+            currentAICard.state = AICardStatus.FAILED;
+            currentAICard.lastUpdated = Date.now();
+          }
         }
       }
       throw dispatchErr;
     }
 
-    // 5) Finalize card stream if card mode is active.
-    if (useCardMode && currentAICard) {
+    // 5) Fallback finalize: covers queuedFinal=false (tool-only, no final text).
+    if (useCardMode && currentAICard && !cardFinalized) {
       try {
-        if (isCardInTerminalState(currentAICard.state)) {
+        if (currentAICard.state === AICardStatus.FINISHED) {
           log?.debug?.(
-            `[DingTalk] Skipping AI Card finalization because card is terminal: state=${currentAICard.state}`,
+            `[DingTalk] Skipping AI Card finalization because card is already FINISHED`,
           );
           return;
         }
 
-        const finalText = queuedFinal ? finalContent.map(v => v.trim()).filter(v => v.length > 0).join("\n\n") : 
-          currentAICard.lastStreamedContent || "✅ Done";
-        await finishAICard(currentAICard, finalText, log);
+        if (currentAICard.state === AICardStatus.FAILED || controller!.isFailed()) {
+          const fallbackText = finalTextForFallback
+            || controller!.getLastContent()
+            || currentAICard.lastStreamedContent;
+          if (fallbackText) {
+            log?.debug?.("[DingTalk] Card failed during streaming, sending markdown fallback");
+            const sendResult = await sendMessage(dingtalkConfig, to, fallbackText, {
+              sessionWebhook,
+              atUserId: !isDirect ? senderId : null,
+              log,
+              accountId,
+              storePath,
+              conversationId: groupId,
+            });
+            if (!sendResult.ok) {
+              throw new Error(sendResult.error || "Markdown fallback send failed after card failure — user received no reply");
+            }
+          } else {
+            log?.debug?.("[DingTalk] Card failed but no content to fallback with");
+          }
+          return;
+        }
+
+        await controller!.flush();
+        await controller!.waitForInFlight();
+        controller!.stop();
+        const fallbackText = controller!.getLastContent()
+          || currentAICard.lastStreamedContent
+          || "✅ Done";
+        await finishAICard(currentAICard, fallbackText, log);
       } catch (err: any) {
         log?.debug?.(`[DingTalk] AI Card finalization failed: ${err.message}`);
         if (err?.response?.data !== undefined) {
