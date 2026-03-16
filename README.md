@@ -447,6 +447,18 @@ openclaw gateway restart
 - 当前钉钉实现底层走 `emotion/reply` / `emotion/recall`，会把解析出的 `ackReaction` 文本原样写入 `emotionName` / `textEmotion.emotionName`
 - 若配置值为 `🤔思考中`，效果与钉钉原生“思考中”反馈一致；配置为其他文本时，会按该文本发送对应的 ack reaction
 
+示例：
+
+```json
+{
+  "channels": {
+    "dingtalk": {
+      "ackReaction": "emoji"
+    }
+  }
+}
+```
+
 ### 连接鲁棒性配置
 
 为提高连接稳定性，插件支持以下高级配置：
