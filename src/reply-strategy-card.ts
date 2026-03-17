@@ -177,7 +177,7 @@ export function createCardReplyStrategy(
         if (err?.response?.data !== undefined) {
           log?.debug?.(formatDingTalkErrorPayloadLog("inbound.cardFinalize", err.response.data));
         }
-        if (card.state !== AICardStatus.FINISHED) {
+        if ((card.state as string) !== AICardStatus.FINISHED) {
           card.state = AICardStatus.FAILED;
           card.lastUpdated = Date.now();
         }
