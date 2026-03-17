@@ -1281,9 +1281,6 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     }
   }
 
-  // Serialize dispatchReply + card finalize per session to prevent the runtime
-  // from receiving concurrent dispatch calls on the same session key, which
-  // causes empty replies for all but the first caller.
   // ---- Shared media delivery helper ----
   async function deliverMediaAttachments(urls: string[]) {
     for (const rawMediaUrl of urls) {
