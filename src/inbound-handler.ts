@@ -12,7 +12,8 @@ import {
   getCardContentByProcessQueryKey,
   isCardInTerminalState,
 } from "./card-service";
-import { resolveGroupConfig } from "./config";
+import { classifyAckReactionEmoji } from "./ack-reaction-classifier";
+import { resolveAckReactionSetting, resolveGroupConfig } from "./config";
 import { formatGroupMembers, noteGroupMember } from "./group-members-store";
 import { setCurrentLogger } from "./logger-context";
 import {
@@ -51,7 +52,6 @@ import { createCardDraftController } from "./card-draft-controller";
 import { acquireSessionLock } from "./session-lock";
 import { cacheInboundDownloadCode, getCachedDownloadCode } from "./quoted-msg-cache";
 import { downloadGroupFile, getUnionIdByStaffId, resolveQuotedFile } from "./quoted-file-service";
-import classifySentenceWithEmoji from "./classifyWithEmoji";
 import {
   formatSessionAliasBoundReply,
   formatSessionAliasClearedReply,
@@ -77,10 +77,11 @@ import {
   listScopedLearningRules,
   resolveManualForcedReply,
 } from "./feedback-learning-service";
+import { attachNativeAckReaction, recallNativeAckReactionWithRetry } from "./ack-reaction-service";
 import { formatDingTalkErrorPayloadLog, maskSensitiveData } from "./utils";
 
 const DEFAULT_PROACTIVE_HINT_COOLDOWN_HOURS = 24;
-const DEFAULT_THINKING_MESSAGE = "🤔 思考中，请稍候...";
+const MIN_THINKING_REACTION_VISIBLE_MS = 1200;
 const ATTACHMENT_TEXT_PREFIX = "[附件内容摘录]";
 const proactiveHintLastSentAt = new Map<string, number>();
 
@@ -1387,6 +1388,35 @@ const extractedContent = { ...extractMessageContent(data) };
 
   log?.info?.(`[DingTalk] Inbound: from=${senderName} text="${content.text.slice(0, 50)}..."`);
 
+  const ackReaction =
+    typeof dingtalkConfig.ackReaction === "string"
+      ? dingtalkConfig.ackReaction.trim()
+      : resolveAckReactionSetting({
+          cfg,
+          accountId,
+          agentId: route.agentId,
+        });
+  const resolvedAckReaction =
+    ackReaction === "emoji" ? classifyAckReactionEmoji(content.text).emoji : ackReaction;
+  const shouldAttachAckReaction = Boolean(resolvedAckReaction);
+  let ackReactionAttached = false;
+  let ackReactionAttachedAt = 0;
+
+  if (shouldAttachAckReaction) {
+    ackReactionAttached = await attachNativeAckReaction(
+      dingtalkConfig,
+      {
+        msgId: data.msgId,
+        conversationId: groupId,
+        reactionName: resolvedAckReaction,
+      },
+      log,
+    );
+    if (ackReactionAttached) {
+      ackReactionAttachedAt = Date.now();
+    }
+  }
+
   // Serialize dispatchReply + card finalize per session to prevent the runtime
   // from receiving concurrent dispatch calls on the same session key, which
   // causes empty replies for all but the first caller.
@@ -1394,36 +1424,8 @@ const extractedContent = { ...extractMessageContent(data) };
   // different session keys (different agentId), so no deadlock risk.
   const releaseSessionLock = await acquireSessionLock(route.sessionKey);
   try {
-    // 4) Optional "thinking..." feedback (markdown mode only).
-    if (dingtalkConfig.showThinking !== false) {
-      let thinkingText = (dingtalkConfig.thinkingMessage || "").trim() || DEFAULT_THINKING_MESSAGE;
-      if (thinkingText === "emoji") {
-        thinkingText = classifySentenceWithEmoji(content.text).emoji;
-      }
-      if (useCardMode && currentAICard) {
-        log?.debug?.(
-          "[DingTalk] messageType=card: showThinking/thinkingMessage do not send standalone hints; thinking is streamed in card mode.",
-        );
-      } else {
-        try {
-          const sendResult = await sendMessage(dingtalkConfig, to, thinkingText, {
-            sessionWebhook,
-            atUserId: !isDirect ? senderId : null,
-            log,
-            accountId,
-            storePath,
-            conversationId: groupId,
-          });
-          if (!sendResult.ok) {
-            throw new Error(sendResult.error || "Thinking message send failed");
-          }
-        } catch (err: any) {
-          log?.debug?.(`[DingTalk] Thinking message failed: ${err.message}`);
-          if (err?.response?.data !== undefined) {
-            log?.debug?.(formatDingTalkErrorPayloadLog("inbound.thinkingMessage", err.response.data));
-          }
-        }
-      }
+    if (!ackReactionAttached && shouldAttachAckReaction) {
+      log?.debug?.("[DingTalk] Native ack reaction unavailable; skipping fallback.");
     }
 
     const controller = useCardMode && currentAICard
@@ -1491,8 +1493,14 @@ const extractedContent = { ...extractMessageContent(data) };
                   ? [richPayload.mediaUrl]
                   : [];
 
+              // In card mode, deliver(final) must always reach finalize even with empty text
+              // (e.g. bot sent a file via tool with no accompanying text).
               if ((typeof textToSend !== "string" || textToSend.length === 0) && mediaUrls.length === 0) {
-                return;
+                if (useCardMode && currentAICard && info?.kind === "final") {
+                  // fall through to card finalize below
+                } else {
+                  return;
+                }
               }
 
               if (typeof textToSend === "string" && isUnhandledStopReasonText(textToSend)) {
@@ -1501,36 +1509,25 @@ const extractedContent = { ...extractMessageContent(data) };
               }
 
               // ---- card mode: final ----
+              // Do NOT finalize or stop the controller here — runtime calls
+              // deliver(final) once per assistant turn, so there may be more
+              // turns coming after tool calls. Finalization is deferred to
+              // step 5 (post-dispatch) where the full accumulated content
+              // is available.
               if (useCardMode && currentAICard && info?.kind === "final") {
-                const rawFinalText = typeof textToSend === "string" ? textToSend : "";
-                await controller!.flush();
-                await controller!.waitForInFlight();
-                controller!.stop();
+                log?.info?.(
+                  `[DingTalk][Finalize] deliver(final) received — cardState=${currentAICard.state} ` +
+                  `textLen=${typeof textToSend === "string" ? textToSend.length : "null"} ` +
+                  `mediaUrls=${mediaUrls.length} ` +
+                  `lastAnswer="${(controller?.getLastAnswerContent() ?? "").slice(0, 80)}" ` +
+                  `lastContent="${(controller?.getLastContent() ?? "").slice(0, 80)}"`,
+                );
                 if (mediaUrls.length > 0) {
                   await deliverMediaAttachments(mediaUrls);
                 }
-                const finalText = controller!.getLastContent() || rawFinalText;
-                if (!isCardInTerminalState(currentAICard.state) && !controller!.isFailed()) {
-                  try {
-                    await finishAICard(currentAICard, finalText, log);
-                    cardFinalized = true;
-                  } catch (finalizeErr: any) {
-                    log?.debug?.(`[DingTalk] AI Card finalization failed in deliver: ${finalizeErr.message}`);
-                    if (finalizeErr?.response?.data !== undefined) {
-                      log?.debug?.(formatDingTalkErrorPayloadLog("inbound.cardFinalize", finalizeErr.response.data));
-                    }
-                    if (currentAICard.state !== AICardStatus.FINISHED) {
-                      currentAICard.state = AICardStatus.FAILED;
-                      currentAICard.lastUpdated = Date.now();
-                    }
-                    finalTextForFallback = finalText;
-                  }
-                } else if (currentAICard.state === AICardStatus.FINISHED) {
-                  log?.info?.("[DingTalk] Card already FINISHED before deliver(final), skipping duplicate finalize");
-                  cardFinalized = true;
-                } else {
-                  log?.info?.("[DingTalk] Card failed before deliver(final), deferring markdown fallback to post-dispatch");
-                  finalTextForFallback = finalText;
+                const rawFinalText = typeof textToSend === "string" ? textToSend : "";
+                if (rawFinalText) {
+                  finalTextForFallback = rawFinalText;
                 }
                 return;
               }
@@ -1599,6 +1596,10 @@ const extractedContent = { ...extractMessageContent(data) };
         replyOptions: {
           disableBlockStreaming: dingtalkConfig.cardRealTimeStream && controller ? true : undefined,
 
+          onAssistantMessageStart: controller
+            ? () => { controller.notifyNewAssistantTurn(); }
+            : undefined,
+
           onPartialReply: dingtalkConfig.cardRealTimeStream && controller
             ? (payload: ReplyStreamPayload) => {
                 if (payload.text) {
@@ -1633,18 +1634,30 @@ const extractedContent = { ...extractMessageContent(data) };
       throw dispatchErr;
     }
 
-    // 5) Fallback finalize: covers queuedFinal=false (tool-only, no final text).
+    // 5) Post-dispatch card finalization.
+    // This is the sole finalize path — deliver(final) defers here because
+    // runtime may call deliver(final) multiple times (once per assistant turn).
+    log?.info?.(
+      `[DingTalk][Finalize] Step 5 entry — useCardMode=${useCardMode} ` +
+      `hasCard=${!!currentAICard} cardFinalized=${cardFinalized} ` +
+      `cardState=${currentAICard?.state ?? "N/A"} ` +
+      `controllerFailed=${controller?.isFailed() ?? "N/A"} ` +
+      `finalTextForFallback="${(finalTextForFallback ?? "").slice(0, 80)}" ` +
+      `lastAnswer="${(controller?.getLastAnswerContent() ?? "").slice(0, 80)}" ` +
+      `lastContent="${(controller?.getLastContent() ?? "").slice(0, 80)}"`,
+    );
     if (useCardMode && currentAICard && !cardFinalized) {
       try {
         if (currentAICard.state === AICardStatus.FINISHED) {
-          log?.debug?.(
-            `[DingTalk] Skipping AI Card finalization because card is already FINISHED`,
+          log?.info?.(
+            `[DingTalk][Finalize] Skipping — card already FINISHED`,
           );
           return;
         }
 
         if (currentAICard.state === AICardStatus.FAILED || controller!.isFailed()) {
           const fallbackText = finalTextForFallback
+            || controller!.getLastAnswerContent()
             || controller!.getLastContent()
             || currentAICard.lastStreamedContent;
           if (fallbackText) {
@@ -1669,10 +1682,15 @@ const extractedContent = { ...extractMessageContent(data) };
         await controller!.flush();
         await controller!.waitForInFlight();
         controller!.stop();
-        const fallbackText = controller!.getLastContent()
-          || currentAICard.lastStreamedContent
+        const finalText = controller!.getLastAnswerContent()
+          || finalTextForFallback
           || "✅ Done";
-        await finishAICard(currentAICard, fallbackText, log);
+        log?.info?.(
+          `[DingTalk][Finalize] Calling finishAICard — finalTextLen=${finalText.length} ` +
+          `source=${controller!.getLastAnswerContent() ? "lastAnswerContent" : finalTextForFallback ? "finalTextForFallback" : "fallbackDone"} ` +
+          `preview="${finalText.slice(0, 120)}"`,
+        );
+        await finishAICard(currentAICard, finalText, log);
       } catch (err: any) {
         log?.debug?.(`[DingTalk] AI Card finalization failed: ${err.message}`);
         if (err?.response?.data !== undefined) {
@@ -1690,6 +1708,24 @@ const extractedContent = { ...extractMessageContent(data) };
     }
   } finally {
     releaseSessionLock();
+    if (ackReactionAttached) {
+      void (async () => {
+        const elapsedMs = ackReactionAttachedAt > 0 ? Date.now() - ackReactionAttachedAt : 0;
+        const remainingVisibleMs = MIN_THINKING_REACTION_VISIBLE_MS - elapsedMs;
+        if (remainingVisibleMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, remainingVisibleMs));
+        }
+        await recallNativeAckReactionWithRetry(
+          dingtalkConfig,
+          {
+            msgId: data.msgId,
+            conversationId: groupId,
+            reactionName: resolvedAckReaction,
+          },
+          log,
+        );
+      })();
+    }
   }
 }
 
