@@ -447,16 +447,16 @@ const extractedContent = { ...extractMessageContent(data) };
   const route = subAgentOptions
     ? {
         agentId: subAgentOptions.agentId,
-        sessionKey: rt.channel.routing
-          .buildAgentSessionKey({
+        sessionKey: (
+          (rt.channel.routing as any).buildAgentSessionKey({
             agentId: subAgentOptions.agentId,
             channel: "dingtalk",
             accountId,
             peer: { kind: sessionPeer.kind, id: sessionPeer.peerId },
             dmScope: cfg.session?.dmScope,
             identityLinks: cfg.session?.identityLinks,
-          })
-          .toLowerCase(),
+          }) as string
+        ).toLowerCase(),
         mainSessionKey: "", // Not used in sub-agent mode
       }
     : rt.channel.routing.resolveAgentRoute({
