@@ -2791,7 +2791,7 @@ describe('inbound-handler', () => {
         }
     });
 
-    it('handleDingTalkMessage does not attach ack reaction when config and agent identity ackReaction are absent', async () => {
+    it('handleDingTalkMessage attaches default ack reaction (👀) when config and agent identity ackReaction are absent', async () => {
         vi.useFakeTimers();
         mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
         try {
@@ -2820,7 +2820,15 @@ describe('inbound-handler', () => {
             } as any);
             await vi.advanceTimersByTimeAsync(1200);
 
-            expect(mockedAxiosPost).not.toHaveBeenCalled();
+            expect(mockedAxiosPost).toHaveBeenCalledWith(
+                'https://api.dingtalk.com/v1.0/robot/emotion/reply',
+                expect.objectContaining({
+                    openMsgId: 'm5_default_ackreaction',
+                    openConversationId: 'cid_ok',
+                    emotionName: '👀',
+                }),
+                expect.any(Object),
+            );
         } finally {
             vi.useRealTimers();
         }

@@ -193,7 +193,7 @@ export function resolveAckReactionSetting(params: {
     return typeof messages.ackReaction === "string" ? messages.ackReaction.trim() : "";
   }
 
-  return resolveAgentIdentityEmoji(params.cfg, params.agentId);
+  return resolveAgentIdentityEmoji(params.cfg, params.agentId) || "👀";
 }
 
 /**
