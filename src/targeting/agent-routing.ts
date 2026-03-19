@@ -43,6 +43,9 @@ export function buildAgentSessionKey(params: {
   // Fallback: derive a session key with agentId suffix to ensure isolation.
   // resolveAgentRoute routes to the default agent, so we append the target
   // agentId to prevent session key collisions between sub-agents.
+  // @migration-note: When SDK exposes buildAgentSessionKey in type definitions,
+  // sessions created via this fallback path will become orphaned. Remove this
+  // fallback and the typeof check once the SDK is updated.
   const fallbackRoute = rt.channel.routing.resolveAgentRoute({
     cfg,
     channel: "dingtalk",

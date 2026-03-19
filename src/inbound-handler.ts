@@ -287,15 +287,17 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     return;
   }
 
+  // Shallow copy: only .text is reassigned below; nested arrays (atMentions, mediaTypes) are read-only downstream.
   const extractedContent = { ...extractMessageContent(data) };
   if (!extractedContent.text) {
     return;
   }
 
-  // Add context hint for sub-agent mode
+  // Add context hint for sub-agent mode, stripping quoted prefix to avoid protocol noise in agent context.
   if (subAgentOptions) {
+    const cleanText = extractedContent.text.replace(/^\[引用[^\]]*\]\s*/, "");
     const contextHint = `[你被 @ 为"${subAgentOptions.matchedName}"]\n\n`;
-    extractedContent.text = contextHint + extractedContent.text;
+    extractedContent.text = contextHint + cleanText;
   }
 
   const isDirect = data.conversationType === "1";

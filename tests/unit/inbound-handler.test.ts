@@ -5299,6 +5299,37 @@ describe("inbound-handler", () => {
       expect(webhookCalls[0].responsePrefix).toContain('[Agent1]');
       expect(webhookCalls[1].responsePrefix).toContain('[Agent2]');
     });
+
+    it('falls back to resolveAgentRoute with agentId suffix when buildAgentSessionKey is unavailable', async () => {
+      const runtime = buildRuntime();
+      // Remove buildAgentSessionKey to trigger fallback path
+      delete (runtime.channel.routing as any).buildAgentSessionKey;
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@expert1 help',
+        messageType: 'text',
+        atMentions: [{ name: 'expert1' }],
+      });
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: { list: [{ id: 'expert1', name: 'expert1' }] },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+        dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
+        data: {
+          msgId: 'fb1', msgtype: 'text', text: { content: '@expert1 help' },
+          conversationType: '2', conversationId: 'group_1',
+          senderId: 'u1', chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+        },
+      } as any);
+
+      // resolveAgentRoute should be called (fallback path)
+      expect(runtime.channel.routing.resolveAgentRoute).toHaveBeenCalled();
+    });
   });
 
     it('card finalize with empty deliver(final) text still finalizes card instead of early-returning', async () => {
