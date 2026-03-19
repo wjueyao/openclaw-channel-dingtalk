@@ -5,7 +5,7 @@
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
-import type { AtMention, AgentNameMatch } from "./types";
+import type { AtMention, AgentNameMatch } from "../types";
 
 interface AgentConfig {
   id: string;

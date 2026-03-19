@@ -1,6 +1,6 @@
 import axios from "axios";
 import { normalizeAllowFrom, isSenderAllowed, isSenderGroupAllowed } from "./access-control";
-import { buildAgentSessionKey, resolveSubAgentRoute, dispatchSubAgents } from "./agent-routing";
+import { buildAgentSessionKey, resolveSubAgentRoute, dispatchSubAgents } from "./targeting/agent-routing";
 import { classifyAckReactionEmoji } from "./ack-reaction-classifier";
 import { attachNativeAckReaction, recallNativeAckReactionWithRetry } from "./ack-reaction-service";
 import { extractAttachmentText } from "./attachment-text-extractor";

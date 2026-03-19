@@ -9,10 +9,10 @@
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { resolveAtAgents } from "./agent-name-matcher";
-import { parseLearnCommand } from "./learning-command-service";
-import { getDingTalkRuntime } from "./runtime";
-import { sendBySession } from "./send-service";
-import type { AgentNameMatch, DingTalkConfig, DingTalkInboundMessage, HandleDingTalkMessageParams, Logger, MessageContent } from "./types";
+import { parseLearnCommand } from "../learning-command-service";
+import { getDingTalkRuntime } from "../runtime";
+import { sendBySession } from "../send-service";
+import type { AgentNameMatch, DingTalkConfig, DingTalkInboundMessage, HandleDingTalkMessageParams, Logger, MessageContent } from "../types";
 
 /**
  * Build a session key for a specific agent using the runtime API.
