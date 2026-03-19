@@ -91,6 +91,8 @@
   - [x] [#352 fix(card): fix AI Card streaming finalization bugs](https://github.com/soimy/openclaw-channel-dingtalk/pull/352)（状态：合并）
 - [x] 回归 Markdown 模式分块回复被拆分问题，确认非卡片模式走单次投递（#360）
   - [x] [#361 fix(markdown): disable block streaming in markdown mode to prevent split messages](https://github.com/soimy/openclaw-channel-dingtalk/pull/361)（状态：合并）
+- [x] 复核 `#368` reply strategy 重构后 card/markdown 投递行为与动态 reaction 装饰器兼容性
+  - [x] [#368 refactor: extract ReplyStrategy interface for streaming reply dispatch](https://github.com/soimy/openclaw-channel-dingtalk/pull/368)（状态：合并）
 - [ ] 复盘 `#363` 关闭未合并方案与当前主线差异，确认其风险点已被后续修复覆盖
   - [ ] [#363 fix(card): prevent duplicate cards and disable unused block streaming](https://github.com/soimy/openclaw-channel-dingtalk/pull/363)（状态：已关闭未合并）
 - [ ] 跟进 `#357` 升级后“卡片仅处理中”反馈，核对 `cardRealTimeStream` 默认值与迁移提示
@@ -103,6 +105,7 @@
 - [#101 支持访问钉盘文件](https://github.com/soimy/openclaw-channel-dingtalk/issues/101)（状态：开启）
 - [#125 大文件分片上传](https://github.com/soimy/openclaw-channel-dingtalk/issues/125)（状态：已关闭）
 - [#315 无法让openclaw将本地文件通过钉钉发送（Dup #207）](https://github.com/soimy/openclaw-channel-dingtalk/issues/315)（状态：开启）
+- [#366 无法发送本机文件到我的钉钉问题](https://github.com/soimy/openclaw-channel-dingtalk/issues/366)（状态：开启）
 
 任务：
 - [ ] 核对基础文件发送能力的当前边界
@@ -114,6 +117,7 @@
 - [x] 评估 `#298` 的附件正文抽取边界（类型/长度/失败回退）与现有文件链路兼容性
   - [x] [#298 feat(dingtalk): 支持入站附件正文抽取](https://github.com/soimy/openclaw-channel-dingtalk/pull/298)（状态：合并）
 - [ ] 跟进 `#207` 新增进展：`robotCode` 已配置仍失败，补充“企业认证/权限付费门槛”前置条件说明
+- [ ] 将 `#366` 的“文本正常但文件发送失败”场景补充到文件链路最小复现矩阵，并对齐与 `#207/#315` 的同源性判断
 
 ### 4. 图片 / 语音 / 媒体链路补强
 相关 Issues：
@@ -167,8 +171,9 @@
 - [ ] 明确转发记录展示策略
 - [ ] 做一次集中回归并沉淀结论
 - [ ] 补充富文本 markdown/代码块引用场景回归，确认引用内容传递边界（#286）
-- [ ] 评估 `#364` 的消息上下文持久化统一方案对 quote/chatRecord 的迁移兼容与回归面
-  - [ ] [#364 feat: unify message context persistence](https://github.com/soimy/openclaw-channel-dingtalk/pull/364)（状态：审核中）
+- [x] 评估 `#364/#371` 的消息上下文持久化统一方案对 quote/chatRecord 的迁移兼容与回归面
+  - [x] [#364 feat: unify message context persistence](https://github.com/soimy/openclaw-channel-dingtalk/pull/364)（状态：合并）
+  - [x] [#371 fix: unify message context journaling scope](https://github.com/soimy/openclaw-channel-dingtalk/pull/371)（状态：合并）
 
 ### 6. 建立 Issue 提交标准化
 任务：
@@ -228,6 +233,8 @@
 - [ ] 跟进 `#354` 的 `peer.kind/peer.id` 绑定误配案例，补“peer.id 取值规则”示例与诊断脚本
 - [ ] 复核 `#356` 的 schema 导入路径争议，确认 `buildChannelConfigSchema` 兼容策略后再决定是否合入
   - [ ] [#356 fix: import buildChannelConfigSchema from plugin-sdk/discord](https://github.com/soimy/openclaw-channel-dingtalk/pull/356)（状态：要求修改）
+- [ ] 评估 `#372` 的 displayName 目标目录学习能力与既有 routing 规则的兼容性（命名冲突、跨群歧义、隐私边界）
+  - [ ] [#372 feat: add displayName-based target learning and resolution](https://github.com/soimy/openclaw-channel-dingtalk/pull/372)（状态：审核中）
 
 ### 9. 支持群聊 @人 / @all
 相关 Issues：
@@ -244,6 +251,8 @@
 - [ ] 设计失败降级与兼容行为
 - [ ] 整理 `#288/#305` 重复诉求，收敛为 `#67` 验收标准
 - [ ] 跟进 `#305` 新增用户追问，补充当前版本可行配置与仍未覆盖场景的状态说明
+- [x] 明确 card 模式下 `@sender` 通知能力边界，避免与“@指定成员”诉求混淆（#369）
+  - [x] [#369 feat: add cardAtSender option to @mention sender after card finalization](https://github.com/soimy/openclaw-channel-dingtalk/pull/369)（状态：合并）
 
 ### 10. 支持对话打断 / 取消任务
 相关 Issues：
@@ -285,8 +294,10 @@
 - [x] 跟进 `#344` 的 review blocking 项（冲突、默认值语义、media deliver 覆盖回归、超时设置），确认 `ackReaction` 对齐策略后再评估可合并性
   - [x] [#344 feat(dingtalk): add native thinking reaction feedback](https://github.com/soimy/openclaw-channel-dingtalk/pull/344)（状态：合并）
 - [ ] 评估 `#314` 的“工具执行实时进度提示”与现有 thinking/usage 提示的职责边界及节流策略
-  - [ ] [#314 feat: real-time tool progress notifications during agent tasks](https://github.com/soimy/openclaw-channel-dingtalk/pull/314)（状态：要求修改）
+  - [ ] [#314 feat: real-time tool progress notifications during agent tasks](https://github.com/soimy/openclaw-channel-dingtalk/pull/314)（状态：审核中）
 - [ ] 跟进 `#314` 最新 review 阻塞项（session 隔离、kaomoji 兼容、状态机测试覆盖）
+- [ ] 跟进 `#367` 卡片回调转发方案的 review 阻塞项（模板变量契约、callback 入口边界、synthetic message 生命周期）
+  - [ ] [#367 feat: forward card action callbacks to AI with card variable update](https://github.com/soimy/openclaw-channel-dingtalk/pull/367)（状态：要求修改）
 
 ---
 
@@ -318,6 +329,7 @@
 - [#144 如何让openclaw主动发消息给我？](https://github.com/soimy/openclaw-channel-dingtalk/issues/144)（状态：开启）
 - [#355 如何让机器人主动给某个用户主动发消息](https://github.com/soimy/openclaw-channel-dingtalk/issues/355)（状态：开启）
 - [#192 markdown格式表格不渲染](https://github.com/soimy/openclaw-channel-dingtalk/issues/192)（状态：已关闭）
+- [#370 Response interrupted: Gateway error: 404 - Not Found（gatewayToken 配置）](https://github.com/soimy/openclaw-channel-dingtalk/issues/370)（状态：已关闭）
 
 任务：
 - [ ] 补 README 截图
@@ -337,11 +349,12 @@
 - [ ] 增补“钉钉上游能力边界”FAQ：项目管理接口、文档表格编辑、消息输出类型限制（#293/#340/#342）
 - [ ] 增补“主动消息发送”FAQ 与前置条件（`robotCode`、会话预热、机器人类型权限、流式模式差异）（#144/#355）
 - [ ] 增补“Markdown 表格渲染差异”说明（客户端差异 + 自定义机器人 vs 应用机器人）（#192/#358）
+- [ ] 补充 `gatewayToken` 缺失/错误时的配置排障指引与默认回退行为说明（#370）
 
 ### 14. 群聊历史滚动摘要 /summary 命令
 任务：
 - [ ] 跟进 `#331` 的阻塞项：`Atomics.wait` 同步锁导致事件循环阻塞风险，需改为异步锁/非阻塞重试
-  - [ ] [#331 feat(dingtalk): add rolling summary history commands](https://github.com/soimy/openclaw-channel-dingtalk/pull/331)（状态：审核中）
+  - [ ] [#331 feat(dingtalk): add rolling summary history commands](https://github.com/soimy/openclaw-channel-dingtalk/pull/331)（状态：要求修改）
 - [ ] 对齐 `historyLimit` 默认值语义（代码默认关闭 vs 注释默认 50）并补充文档
 - [ ] 在 rebase 后复核 `/summary` 命令边界（owner 鉴权、token 成本、历史窗口与归档段限制）
 
