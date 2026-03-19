@@ -9,8 +9,6 @@ const shared = vi.hoisted(() => ({
     sendMessageMock: vi.fn(),
     sendProactiveMediaMock: vi.fn(),
     extractMessageContentMock: vi.fn(),
-    findCardContentMock: vi.fn(),
-    getCardContentByProcessQueryKeyMock: vi.fn(),
     downloadGroupFileMock: vi.fn(),
     getRuntimeMock: vi.fn(),
     getUnionIdByStaffIdMock: vi.fn(),
@@ -21,8 +19,6 @@ const shared = vi.hoisted(() => ({
     formatContentForCardMock: vi.fn((s: string) => s),
     isCardInTerminalStateMock: vi.fn(),
     acquireSessionLockMock: vi.fn(),
-    appendQuoteJournalEntryMock: vi.fn(),
-    resolveQuotedMessageByIdMock: vi.fn(),
     extractAttachmentTextMock: vi.fn(),
     prepareMediaInputMock: vi.fn(),
     resolveOutboundMediaTypeMock: vi.fn(),
@@ -69,10 +65,8 @@ vi.mock('../../src/media-utils', async () => {
 
 vi.mock('../../src/card-service', () => ({
     createAICard: shared.createAICardMock,
-    findCardContent: shared.findCardContentMock,
     finishAICard: shared.finishAICardMock,
     formatContentForCard: shared.formatContentForCardMock,
-    getCardContentByProcessQueryKey: shared.getCardContentByProcessQueryKeyMock,
     isCardInTerminalState: shared.isCardInTerminalStateMock,
     streamAICard: shared.streamAICardMock,
 }));
@@ -81,11 +75,17 @@ vi.mock('../../src/session-lock', () => ({
     acquireSessionLock: shared.acquireSessionLockMock,
 }));
 
-vi.mock('../../src/quote-journal', () => ({
-    DEFAULT_JOURNAL_TTL_DAYS: 7,
-    appendQuoteJournalEntry: shared.appendQuoteJournalEntryMock,
-    resolveQuotedMessageById: shared.resolveQuotedMessageByIdMock,
-}));
+vi.mock('../../src/message-context-store', async () => {
+    const actual = await vi.importActual<typeof import('../../src/message-context-store')>('../../src/message-context-store');
+    return {
+        ...actual,
+        upsertInboundMessageContext: vi.fn(actual.upsertInboundMessageContext),
+        resolveByMsgId: vi.fn(actual.resolveByMsgId),
+        resolveByAlias: vi.fn(actual.resolveByAlias),
+        resolveByCreatedAtWindow: vi.fn(actual.resolveByCreatedAtWindow),
+        clearMessageContextCacheForTest: vi.fn(actual.clearMessageContextCacheForTest),
+    };
+});
 
 vi.mock('../../src/quoted-file-service', () => ({
     downloadGroupFile: shared.downloadGroupFileMock,
@@ -98,12 +98,16 @@ import {
     handleDingTalkMessage,
     resetProactivePermissionHintStateForTest,
 } from '../../src/inbound-handler';
-import { cacheInboundDownloadCode, clearQuotedMsgCacheForTest, getCachedDownloadCode } from '../../src/quoted-msg-cache';
+import * as messageContextStore from '../../src/message-context-store';
 import { recordProactiveRiskObservation } from '../../src/proactive-risk-registry';
 
 const mockedAxiosPost = vi.mocked(axios.post);
 const mockedAxiosGet = vi.mocked(axios.get);
 const mockedGetAccessToken = vi.mocked(getAccessToken);
+const mockedUpsertInboundMessageContext = vi.mocked(messageContextStore.upsertInboundMessageContext);
+const mockedResolveByMsgId = vi.mocked(messageContextStore.resolveByMsgId);
+const mockedResolveByAlias = vi.mocked(messageContextStore.resolveByAlias);
+const mockedResolveByCreatedAtWindow = vi.mocked(messageContextStore.resolveByCreatedAtWindow);
 
 function buildRuntime() {
     return {
@@ -161,10 +165,10 @@ describe('inbound-handler', () => {
             return { ok: true };
         });
         shared.extractMessageContentMock.mockReset();
-        shared.findCardContentMock.mockReset();
-        shared.findCardContentMock.mockReturnValue(null);
-        shared.getCardContentByProcessQueryKeyMock.mockReset();
-        shared.getCardContentByProcessQueryKeyMock.mockReturnValue(null);
+        mockedUpsertInboundMessageContext.mockClear();
+        mockedResolveByMsgId.mockClear();
+        mockedResolveByAlias.mockClear();
+        mockedResolveByCreatedAtWindow.mockClear();
         shared.createAICardMock.mockReset();
         shared.downloadGroupFileMock.mockReset();
         shared.downloadGroupFileMock.mockResolvedValue(null);
@@ -178,17 +182,13 @@ describe('inbound-handler', () => {
 
         shared.acquireSessionLockMock.mockReset();
         shared.acquireSessionLockMock.mockResolvedValue(vi.fn());
-        shared.appendQuoteJournalEntryMock.mockReset();
-        shared.appendQuoteJournalEntryMock.mockReturnValue(undefined);
-        shared.resolveQuotedMessageByIdMock.mockReset();
-        shared.resolveQuotedMessageByIdMock.mockReturnValue(null);
         shared.extractAttachmentTextMock.mockReset();
         shared.extractAttachmentTextMock.mockResolvedValue(null);
 
         shared.getRuntimeMock.mockReturnValue(buildRuntime());
         shared.extractMessageContentMock.mockReturnValue({ text: 'hello', messageType: 'text' });
         resetProactivePermissionHintStateForTest();
-        clearQuotedMsgCacheForTest();
+        messageContextStore.clearMessageContextCacheForTest();
         shared.createAICardMock.mockResolvedValue({
             cardInstanceId: 'card_1',
             state: '1',
@@ -1206,10 +1206,10 @@ describe('inbound-handler', () => {
         const runtime = buildRuntime();
         runtime.channel.session.resolveStorePath = vi
             .fn()
-            .mockReturnValueOnce('/tmp/agent-store.json')
             .mockReturnValueOnce('/tmp/account-store.json')
             .mockReturnValueOnce('/tmp/agent-store.json')
-            .mockReturnValueOnce('/tmp/account-store.json');
+            .mockReturnValueOnce('/tmp/account-store.json')
+            .mockReturnValueOnce('/tmp/agent-store.json');
         shared.getRuntimeMock.mockReturnValue(runtime);
         shared.extractMessageContentMock
             .mockReturnValueOnce({
@@ -1322,15 +1322,15 @@ describe('inbound-handler', () => {
         expect(shared.sendMessageMock).toHaveBeenCalled();
         const cardSends = shared.sendMessageMock.mock.calls.filter((call: any[]) => call[3]?.card);
         expect(cardSends.length).toBeGreaterThan(0);
-        expect(shared.appendQuoteJournalEntryMock).toHaveBeenCalled();
+        expect(mockedUpsertInboundMessageContext).toHaveBeenCalled();
     });
 
     it('appends inbound quote journal entry with store/account/session context', async () => {
         const runtime = buildRuntime();
         runtime.channel.session.resolveStorePath = vi
             .fn()
-            .mockReturnValueOnce('/tmp/agent-store.json')
-            .mockReturnValueOnce('/tmp/account-store.json');
+            .mockReturnValueOnce('/tmp/account-store.json')
+            .mockReturnValueOnce('/tmp/agent-store.json');
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
 
         await handleDingTalkMessage({
@@ -1352,7 +1352,7 @@ describe('inbound-handler', () => {
             },
         } as any);
 
-        expect(shared.appendQuoteJournalEntryMock).toHaveBeenCalledWith(
+        expect(mockedUpsertInboundMessageContext).toHaveBeenCalledWith(
             expect.objectContaining({
                 storePath: '/tmp/account-store.json',
                 accountId: 'main',
@@ -1361,7 +1361,7 @@ describe('inbound-handler', () => {
                 messageType: 'text',
                 text: 'hello',
                 createdAt: 1700000000000,
-                ttlDays: 9,
+                cleanupCreatedAtTtlDays: 9,
             }),
         );
     });
@@ -1370,18 +1370,23 @@ describe('inbound-handler', () => {
         const runtime = buildRuntime();
         runtime.channel.session.resolveStorePath = vi
             .fn()
-            .mockReturnValueOnce('/tmp/dm-agent-store.json')
-            .mockReturnValueOnce('/tmp/dm-account-store.json');
+            .mockReturnValueOnce('/tmp/dm-account-store.json')
+            .mockReturnValueOnce('/tmp/dm-agent-store.json');
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
         shared.extractMessageContentMock.mockReturnValueOnce({
             text: '[这是一条引用消息，原消息ID: orig_msg_001]\n\nhello',
             messageType: 'text',
         });
-        shared.resolveQuotedMessageByIdMock.mockReturnValueOnce({
+        mockedResolveByMsgId.mockReturnValueOnce({
             msgId: 'orig_msg_001',
+            direction: 'inbound',
+            topic: null,
+            accountId: 'main',
+            conversationId: 'cid_ok',
             text: '历史原文',
             createdAt: Date.now() - 1000,
-        });
+            updatedAt: Date.now(),
+        } as any);
 
         await handleDingTalkMessage({
             cfg: {},
@@ -1403,12 +1408,12 @@ describe('inbound-handler', () => {
             },
         } as any);
 
-        expect(shared.resolveQuotedMessageByIdMock).toHaveBeenCalledWith(
+        expect(mockedResolveByMsgId).toHaveBeenCalledWith(
             expect.objectContaining({
+                storePath: '/tmp/dm-account-store.json',
                 accountId: 'main',
                 conversationId: 'cid_ok',
-                originalMsgId: 'orig_msg_001',
-                ttlDays: 11,
+                msgId: 'orig_msg_001',
             }),
         );
 
@@ -1420,8 +1425,8 @@ describe('inbound-handler', () => {
         const runtime = buildRuntime();
         runtime.channel.session.resolveStorePath = vi
             .fn()
-            .mockReturnValueOnce('/tmp/dm-agent-store.json')
-            .mockReturnValueOnce('/tmp/dm-account-store.json');
+            .mockReturnValueOnce('/tmp/dm-account-store.json')
+            .mockReturnValueOnce('/tmp/dm-agent-store.json');
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
         shared.extractMessageContentMock.mockReturnValueOnce({
             text: '[引用消息: "历史原文"]\n\n真正正文',
@@ -1447,8 +1452,9 @@ describe('inbound-handler', () => {
             },
         } as any);
 
-        expect(shared.appendQuoteJournalEntryMock).toHaveBeenCalledWith(
+        expect(mockedUpsertInboundMessageContext).toHaveBeenCalledWith(
             expect.objectContaining({
+                storePath: '/tmp/dm-account-store.json',
                 text: '真正正文',
             }),
         );
@@ -1458,8 +1464,8 @@ describe('inbound-handler', () => {
         const runtime = buildRuntime();
         runtime.channel.session.resolveStorePath = vi
             .fn()
-            .mockReturnValueOnce('/tmp/dm-agent-store.json')
-            .mockReturnValueOnce('/tmp/dm-account-store.json');
+            .mockReturnValueOnce('/tmp/dm-account-store.json')
+            .mockReturnValueOnce('/tmp/dm-agent-store.json');
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
 
         await handleDingTalkMessage({
@@ -1481,12 +1487,13 @@ describe('inbound-handler', () => {
             },
         } as any);
 
-        expect(shared.appendQuoteJournalEntryMock).toHaveBeenCalledWith(
+        expect(mockedUpsertInboundMessageContext).toHaveBeenCalledWith(
             expect.objectContaining({
+                storePath: '/tmp/dm-account-store.json',
                 conversationId: 'cid_dm_stable',
             }),
         );
-        expect(shared.appendQuoteJournalEntryMock).not.toHaveBeenCalledWith(
+        expect(mockedUpsertInboundMessageContext).not.toHaveBeenCalledWith(
             expect.objectContaining({
                 conversationId: 'user_1',
             }),
@@ -1497,18 +1504,23 @@ describe('inbound-handler', () => {
         const runtime = buildRuntime();
         runtime.channel.session.resolveStorePath = vi
             .fn()
-            .mockReturnValueOnce('/tmp/dm-agent-store.json')
-            .mockReturnValueOnce('/tmp/dm-account-store.json');
+            .mockReturnValueOnce('/tmp/dm-account-store.json')
+            .mockReturnValueOnce('/tmp/dm-agent-store.json');
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
         shared.extractMessageContentMock.mockReturnValueOnce({
             text: '我在讨论字符串 [引用消息:] 本身',
             messageType: 'text',
         });
-        shared.resolveQuotedMessageByIdMock.mockReturnValueOnce({
+        mockedResolveByMsgId.mockReturnValueOnce({
             msgId: 'orig_msg_literal',
+            direction: 'inbound',
+            topic: null,
+            accountId: 'main',
+            conversationId: 'cid_ok',
             text: '被引用原文',
             createdAt: Date.now() - 1000,
-        });
+            updatedAt: Date.now(),
+        } as any);
 
         await handleDingTalkMessage({
             cfg: {},
@@ -1532,12 +1544,22 @@ describe('inbound-handler', () => {
 
         const envelopeArg = (runtime.channel.reply.formatInboundEnvelope as any).mock.calls[0]?.[0];
         expect(envelopeArg.body).toContain('[引用消息: "被引用原文"]');
-        expect(shared.resolveQuotedMessageByIdMock).toHaveBeenCalledWith(
-            expect.objectContaining({ originalMsgId: 'orig_msg_literal' }),
+        expect(mockedResolveByMsgId).toHaveBeenCalledWith(
+            expect.objectContaining({
+                storePath: '/tmp/dm-account-store.json',
+                msgId: 'orig_msg_literal',
+            }),
         );
     });
 
     it('handleDingTalkMessage runs non-card flow and sends thinking + final outputs', async () => {
+        const runtime = buildRuntime();
+        runtime.channel.session.resolveStorePath = vi
+            .fn()
+            .mockReturnValueOnce('/tmp/account-store.json')
+            .mockReturnValueOnce('/tmp/agent-store.json');
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
         await handleDingTalkMessage({
             cfg: {},
             accountId: 'main',
@@ -1558,6 +1580,12 @@ describe('inbound-handler', () => {
         } as any);
 
         expect(shared.sendMessageMock).toHaveBeenCalled();
+        expect(shared.sendMessageMock).toHaveBeenCalledWith(
+            expect.anything(),
+            'user_1',
+            expect.any(String),
+            expect.objectContaining({ storePath: '/tmp/account-store.json' }),
+        );
     });
 
     it('handleDingTalkMessage restores quoted card by originalProcessQueryKey', async () => {
@@ -1576,7 +1604,17 @@ describe('inbound-handler', () => {
                 processQueryKey: 'carrier_quoted_1',
             },
         });
-        shared.getCardContentByProcessQueryKeyMock.mockReturnValueOnce('机器人之前的回复内容');
+        mockedResolveByAlias.mockReturnValueOnce({
+            msgId: 'carrier_quoted_1',
+            direction: 'outbound',
+            topic: null,
+            accountId: 'main',
+            conversationId: 'user_1',
+            text: '机器人之前的回复内容',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            delivery: { processQueryKey: 'carrier_quoted_1', kind: 'proactive-card' },
+        } as any);
 
         await handleDingTalkMessage({
             cfg: {},
@@ -1598,11 +1636,14 @@ describe('inbound-handler', () => {
             },
         } as any);
 
-        expect(shared.getCardContentByProcessQueryKeyMock).toHaveBeenCalledWith(
-            'main',
-            'user_1',
-            'carrier_quoted_1',
-            '/tmp/account-store.json',
+        expect(mockedResolveByAlias).toHaveBeenCalledWith(
+            expect.objectContaining({
+                storePath: '/tmp/account-store.json',
+                accountId: 'main',
+                conversationId: 'user_1',
+                kind: 'processQueryKey',
+                value: 'carrier_quoted_1',
+            }),
         );
         expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -1627,7 +1668,16 @@ describe('inbound-handler', () => {
                 cardCreatedAt: 1772817989679,
             },
         });
-        shared.findCardContentMock.mockReturnValueOnce('旧兼容卡片内容');
+        mockedResolveByCreatedAtWindow.mockReturnValueOnce({
+            msgId: 'createdAt:fallback',
+            direction: 'outbound',
+            topic: null,
+            accountId: 'main',
+            conversationId: 'user_1',
+            text: '旧兼容卡片内容',
+            createdAt: 1772817989679,
+            updatedAt: Date.now(),
+        } as any);
 
         await handleDingTalkMessage({
             cfg: {},
@@ -1648,12 +1698,15 @@ describe('inbound-handler', () => {
             },
         } as any);
 
-        expect(shared.getCardContentByProcessQueryKeyMock).not.toHaveBeenCalled();
-        expect(shared.findCardContentMock).toHaveBeenCalledWith(
-            'main',
-            'user_1',
-            1772817989679,
-            '/tmp/account-store.json',
+        expect(mockedResolveByAlias).not.toHaveBeenCalled();
+        expect(mockedResolveByCreatedAtWindow).toHaveBeenCalledWith(
+            expect.objectContaining({
+                storePath: '/tmp/account-store.json',
+                accountId: 'main',
+                conversationId: 'user_1',
+                createdAt: 1772817989679,
+                direction: 'outbound',
+            }),
         );
         expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -1703,11 +1756,16 @@ describe('inbound-handler', () => {
         } as any);
 
         expect(shared.resolveQuotedFileMock).toHaveBeenCalledTimes(1);
-        const restored = getCachedDownloadCode('main', 'cid_group_1', 'group_file_msg_1', '/tmp/store.json');
+        const restored = messageContextStore.resolveByMsgId({
+            storePath: '/tmp/store.json',
+            accountId: 'main',
+            conversationId: 'cid_group_1',
+            msgId: 'group_file_msg_1',
+        });
         expect(restored).not.toBeNull();
-        expect(restored!.downloadCode).toBeUndefined();
-        expect(restored!.spaceId).toBe('space_group_1');
-        expect(restored!.fileId).toBe('dentry_group_1');
+        expect(restored!.media?.downloadCode).toBeUndefined();
+        expect(restored!.media?.spaceId).toBe('space_group_1');
+        expect(restored!.media?.fileId).toBe('dentry_group_1');
     });
 
     it('handleDingTalkMessage downloads single-chat doc card and persists msgId metadata', async () => {
@@ -1754,10 +1812,15 @@ describe('inbound-handler', () => {
             'union_1',
             undefined,
         );
-        const restored = getCachedDownloadCode('main', 'cid_dm_1', 'doc_origin_msg', '/tmp/store.json');
+        const restored = messageContextStore.resolveByMsgId({
+            storePath: '/tmp/store.json',
+            accountId: 'main',
+            conversationId: 'cid_dm_1',
+            msgId: 'doc_origin_msg',
+        });
         expect(restored).not.toBeNull();
-        expect(restored!.spaceId).toBe('space_doc_1');
-        expect(restored!.fileId).toBe('file_doc_1');
+        expect(restored!.media?.spaceId).toBe('space_doc_1');
+        expect(restored!.media?.fileId).toBe('file_doc_1');
         expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
             expect.objectContaining({
                 MediaType: 'application/pdf',
@@ -1876,12 +1939,21 @@ describe('inbound-handler', () => {
     it('handleDingTalkMessage restores quoted single-chat doc card from cached metadata', async () => {
         const runtime = buildRuntime();
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
-        cacheInboundDownloadCode('main', 'cid_dm_2', 'doc_origin_msg_2', undefined, 'interactiveCardFile', Date.now(), {
+        messageContextStore.upsertInboundMessageContext({
             storePath: '/tmp/store.json',
-            spaceId: 'space_doc_2',
-            fileId: 'file_doc_2',
+            accountId: 'main',
+            conversationId: 'cid_dm_2',
+            msgId: 'doc_origin_msg_2',
+            createdAt: Date.now(),
+            messageType: 'interactiveCardFile',
+            media: {
+                spaceId: 'space_doc_2',
+                fileId: 'file_doc_2',
+            },
+            ttlMs: messageContextStore.DEFAULT_MEDIA_CONTEXT_TTL_MS,
+            topic: null,
         });
-        clearQuotedMsgCacheForTest();
+        messageContextStore.clearMessageContextCacheForTest();
         shared.extractMessageContentMock.mockReturnValueOnce({
             text: '[引用了钉钉文档]\n\n我引用了什么？',
             messageType: 'text',
@@ -1935,7 +2007,7 @@ describe('inbound-handler', () => {
     it('handleDingTalkMessage degrades quoted doc card when cached metadata is unavailable', async () => {
         const runtime = buildRuntime();
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
-        clearQuotedMsgCacheForTest();
+        messageContextStore.clearMessageContextCacheForTest();
         shared.extractMessageContentMock.mockReturnValueOnce({
             text: '[引用了钉钉文档]\n\n1',
             messageType: 'text',
@@ -1978,7 +2050,7 @@ describe('inbound-handler', () => {
     it('handleDingTalkMessage falls back to group-file resolution for quoted doc card in group chat', async () => {
         const runtime = buildRuntime();
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
-        clearQuotedMsgCacheForTest();
+        messageContextStore.clearMessageContextCacheForTest();
         shared.extractMessageContentMock.mockReturnValueOnce({
             text: '[引用了钉钉文档]\n\n1',
             messageType: 'text',
@@ -2026,10 +2098,15 @@ describe('inbound-handler', () => {
             },
             undefined,
         );
-        const restored = getCachedDownloadCode('main', 'cid_group_doc', 'group_doc_msg', '/tmp/store.json');
+        const restored = messageContextStore.resolveByMsgId({
+            storePath: '/tmp/store.json',
+            accountId: 'main',
+            conversationId: 'cid_group_doc',
+            msgId: 'group_doc_msg',
+        });
         expect(restored).not.toBeNull();
-        expect(restored!.spaceId).toBe('space_group_doc');
-        expect(restored!.fileId).toBe('file_group_doc');
+        expect(restored!.media?.spaceId).toBe('space_group_doc');
+        expect(restored!.media?.fileId).toBe('file_group_doc');
         expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
             expect.objectContaining({
                 RawBody: '[引用了钉钉文档]\n\n1',
@@ -2041,13 +2118,22 @@ describe('inbound-handler', () => {
     it('handleDingTalkMessage restores group quoted file from persisted metadata without fallback query', async () => {
         const runtime = buildRuntime();
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
-        clearQuotedMsgCacheForTest();
-        cacheInboundDownloadCode('main', 'cid_group_2', 'file_origin', undefined, 'file', Date.now(), {
+        messageContextStore.clearMessageContextCacheForTest();
+        messageContextStore.upsertInboundMessageContext({
             storePath: '/tmp/store.json',
-            spaceId: 'space_group_2',
-            fileId: 'dentry_group_2',
+            accountId: 'main',
+            conversationId: 'cid_group_2',
+            msgId: 'file_origin',
+            createdAt: Date.now(),
+            messageType: 'file',
+            media: {
+                spaceId: 'space_group_2',
+                fileId: 'dentry_group_2',
+            },
+            ttlMs: messageContextStore.DEFAULT_MEDIA_CONTEXT_TTL_MS,
+            topic: null,
         });
-        clearQuotedMsgCacheForTest();
+        messageContextStore.clearMessageContextCacheForTest();
         shared.extractMessageContentMock.mockReturnValueOnce({
             text: '[引用文件]\n\n群聊文件',
             messageType: 'text',
@@ -2459,7 +2545,11 @@ describe('inbound-handler', () => {
             'user_1',
             '/tmp/prepared/report.pdf',
             'file',
-            expect.objectContaining({ accountId: 'main' }),
+            expect.objectContaining({
+                accountId: 'main',
+                storePath: '/tmp/store.json',
+                conversationId: 'user_1',
+            }),
         );
     });
 
@@ -3684,8 +3774,10 @@ describe('inbound-handler', () => {
         const debugLogs = log.debug.mock.calls.map((args: unknown[]) => String(args[0]));
         expect(debugLogs.some((msg) => msg.includes('Card failed during streaming, sending markdown fallback'))).toBe(true);
 
+        // Fallback uses sendMessage with forceMarkdown to skip card creation
+        // while preserving journal writes.
         const fallbackCalls = shared.sendMessageMock.mock.calls.filter(
-            (call: any[]) => !call[3]?.card && !call[3]?.cardUpdateMode
+            (call: any[]) => call[3]?.forceMarkdown === true
         );
         expect(fallbackCalls.length).toBeGreaterThanOrEqual(1);
         expect(fallbackCalls[0][2]).toBe('complete final answer');
@@ -3756,41 +3848,6 @@ describe('inbound-handler', () => {
 
         expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
         expect(shared.finishAICardMock).toHaveBeenCalledWith(card, '❌ 处理失败', expect.anything());
-    });
-
-    it('does not leak unhandled stop reason text to outbound chat messages', async () => {
-        const runtime = buildRuntime();
-        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ dispatcherOptions }) => {
-            await dispatcherOptions.deliver({ text: 'Unhandled stop reason: network_error' }, { kind: 'final' });
-            return { queuedFinal: 'Unhandled stop reason: network_error' };
-        });
-        shared.getRuntimeMock.mockReturnValueOnce(runtime);
-
-        await handleDingTalkMessage({
-            cfg: {},
-            accountId: 'main',
-            sessionWebhook: 'https://session.webhook',
-            log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
-            dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
-            data: {
-                msgId: 'm12',
-                msgtype: 'text',
-                text: { content: 'hello' },
-                conversationType: '1',
-                conversationId: 'cid_ok',
-                senderId: 'user_1',
-                chatbotUserId: 'bot_1',
-                sessionWebhook: 'https://session.webhook',
-                createAt: Date.now(),
-            },
-        } as any);
-
-        expect(shared.sendMessageMock).not.toHaveBeenCalledWith(
-            expect.anything(),
-            expect.anything(),
-            expect.stringContaining('Unhandled stop reason:'),
-            expect.anything(),
-        );
     });
 
     it('cardRealTimeStream finalize uses accumulated multi-turn content instead of last-turn-only deliver text', async () => {
@@ -4295,5 +4352,117 @@ describe('inbound-handler', () => {
         const finalizeContent = shared.finishAICardMock.mock.calls[0][1];
         expect(finalizeContent).not.toContain('思考中');
         expect(finalizeContent).not.toContain('send');
+    });
+
+    it('cardAtSender: sends @mention after card finalize in group chat', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: 'hello', messageType: 'text' });
+        const card = { cardInstanceId: 'card_at_1', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+        shared.sendBySessionMock.mockResolvedValue({});
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardAtSender: '✅ 回复完成' } as any,
+            data: {
+                msgId: 'mid_at_group', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '2', conversationId: 'cid_group_1', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        // Should have called sendBySession with atUserId for the @mention
+        const atCalls = shared.sendBySessionMock.mock.calls.filter(
+            (call: any[]) => call[3]?.atUserId === 'user_1',
+        );
+        expect(atCalls.length).toBe(1);
+    });
+
+    it('cardAtSender: does NOT send @mention when cardAtSender is false (default)', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: 'hello', messageType: 'text' });
+        const card = { cardInstanceId: 'card_at_2', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card' } as any,
+            data: {
+                msgId: 'mid_at_noconfig', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '2', conversationId: 'cid_group_1', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        const atCalls = shared.sendBySessionMock.mock.calls.filter(
+            (call: any[]) => call[3]?.atUserId === 'user_1',
+        );
+        expect(atCalls.length).toBe(0);
+    });
+
+    it('cardAtSender: does NOT send @mention in direct messages even when enabled', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: 'hello', messageType: 'text' });
+        const card = { cardInstanceId: 'card_at_3', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardAtSender: '✅ 回复完成' } as any,
+            data: {
+                msgId: 'mid_at_dm', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        const atCalls = shared.sendBySessionMock.mock.calls.filter(
+            (call: any[]) => call[3]?.atUserId === 'user_1',
+        );
+        expect(atCalls.length).toBe(0);
+    });
+
+    it('cardAtSender: swallows @mention error without affecting card finalization', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: 'hello', messageType: 'text' });
+        const card = { cardInstanceId: 'card_at_4', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+        shared.sendBySessionMock.mockRejectedValueOnce(new Error('webhook expired'));
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardAtSender: '✅ 回复完成' } as any,
+            data: {
+                msgId: 'mid_at_err', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '2', conversationId: 'cid_group_1', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        // Card finalization succeeded despite @mention failure
     });
 });
