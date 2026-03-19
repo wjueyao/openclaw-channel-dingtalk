@@ -293,7 +293,8 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
 
     // Strip quoted prefix before extracting @mentions to avoid matching @names inside quotes.
     const textForAtExtraction = textContent.replace(/^\[引用[^\]]*\]\s*/, "");
-    const atMatches = textForAtExtraction.matchAll(/@([^\s@]+)/g);
+    // Match @name but exclude email-like patterns (user@domain.com) and emoji (@_@).
+    const atMatches = textForAtExtraction.matchAll(/(?<!\w)@([^\s@.]+)(?!\.\w)/g);
     for (const match of atMatches) {
       atMentions.push({ name: match[1].trim() });
     }

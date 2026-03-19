@@ -287,7 +287,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     return;
   }
 
-const extractedContent = { ...extractMessageContent(data) };
+  const extractedContent = { ...extractMessageContent(data) };
   if (!extractedContent.text) {
     return;
   }
@@ -421,7 +421,7 @@ const extractedContent = { ...extractMessageContent(data) };
     }
   }
 
-// Calculate account store path and session peer (for session alias feature)
+  // Calculate account store path and session peer (for session alias feature)
   const accountStorePath = rt.channel.session.resolveStorePath(cfg.session?.store, {
     agentId: accountId,
   });

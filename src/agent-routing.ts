@@ -40,21 +40,25 @@ export function buildAgentSessionKey(params: {
       })
     ).toLowerCase();
   }
-  // Fallback: use resolveAgentRoute (routes to default agent, not the requested one)
+  // Fallback: derive a session key with agentId suffix to ensure isolation.
+  // resolveAgentRoute routes to the default agent, so we append the target
+  // agentId to prevent session key collisions between sub-agents.
   const fallbackRoute = rt.channel.routing.resolveAgentRoute({
     cfg,
     channel: "dingtalk",
     accountId,
     peer: { kind: peerKind, id: peerId },
   });
-  return fallbackRoute.sessionKey;
+  return `${fallbackRoute.sessionKey}:subagent:${agentId}`;
 }
 
 /**
- * Escape special characters in agent name for use in markdown prefix.
+ * Sanitize agent name for safe use in markdown prefix and context hints.
+ * Strips brackets, newlines, and control characters to prevent markdown
+ * breakage and prompt injection.
  */
-function escapeMarkdownBrackets(name: string): string {
-  return name.replace(/[\[\]]/g, "");
+function sanitizeAgentName(name: string): string {
+  return name.replace(/[\[\]\r\n]/g, "").trim();
 }
 
 /**
@@ -157,7 +161,7 @@ export async function dispatchSubAgents(params: {
         dingtalkConfig,
         subAgentOptions: {
           agentId: agentMatch.agentId,
-          responsePrefix: `[${escapeMarkdownBrackets(agentMatch.matchedName)}] `,
+          responsePrefix: `[${sanitizeAgentName(agentMatch.matchedName)}] `,
           matchedName: agentMatch.matchedName,
         },
         preDownloadedMedia,
