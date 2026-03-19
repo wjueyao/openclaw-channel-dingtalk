@@ -292,6 +292,41 @@ describe('card-service', () => {
         })?.text).toBe('final text');
     });
 
+    it('finishAICard persists direct-chat card content by context conversation scope', async () => {
+        mockedAxios.put.mockResolvedValueOnce({ status: 200, data: { ok: true } });
+
+        const card = {
+            cardInstanceId: 'card_dm_scope',
+            processQueryKey: 'carrier_dm_scope',
+            accessToken: 'token_abc',
+            conversationId: 'manager8031',
+            contextConversationId: 'cid_dm_stable_1',
+            accountId: 'main',
+            storePath,
+            createdAt: Date.now(),
+            lastUpdated: Date.now(),
+            state: AICardStatus.INPUTING,
+            config: { cardTemplateKey: 'content' },
+        } as any;
+
+        await finishAICard(card, 'dm final text');
+
+        expect(resolveByAlias({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_dm_stable_1',
+            kind: 'processQueryKey',
+            value: 'carrier_dm_scope',
+        })?.text).toBe('dm final text');
+        expect(resolveByAlias({
+            storePath,
+            accountId: 'main',
+            conversationId: 'manager8031',
+            kind: 'processQueryKey',
+            value: 'carrier_dm_scope',
+        })?.text).toBe('dm final text');
+    });
+
     it('streamAICard marks FAILED and sends mismatch notification on 500 unknownError', async () => {
         mockedAxios.put.mockRejectedValueOnce({
             response: { status: 500, data: { code: 'unknownError' } },

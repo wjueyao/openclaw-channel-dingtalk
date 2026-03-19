@@ -24,6 +24,7 @@ import type {
   DingTalkConfig,
   DingTalkTrackingMetadata,
   Logger,
+  QuotedRef,
 } from "./types";
 import { AICardStatus } from "./types";
 import { formatDingTalkErrorPayloadLog, getProxyBypassOption } from "./utils";
@@ -198,6 +199,7 @@ interface CreateAICardOptions {
   accountId?: string;
   storePath?: string;
   persistPending?: boolean;
+  contextConversationId?: string;
 }
 
 interface PendingCardRecord {
@@ -205,6 +207,7 @@ interface PendingCardRecord {
   cardInstanceId: string;
   outTrackId?: string;
   conversationId: string;
+  contextConversationId?: string;
   createdAt: number;
   lastUpdated: number;
   state: string;
@@ -312,6 +315,7 @@ function upsertPendingCard(card: AICardInstance, storePath?: string, log?: Logge
     cardInstanceId: card.cardInstanceId,
     outTrackId: card.outTrackId,
     conversationId: card.conversationId,
+    contextConversationId: card.contextConversationId,
     createdAt: card.createdAt,
     lastUpdated: card.lastUpdated,
     state: card.state,
@@ -517,6 +521,7 @@ async function finalizePendingCardsByAccount(
       cardInstanceId: entry.cardInstanceId,
       accessToken: token,
       conversationId: entry.conversationId,
+      contextConversationId: entry.contextConversationId,
       accountId: entry.accountId,
       storePath,
       outTrackId: entry.outTrackId,
@@ -651,6 +656,7 @@ export async function createAICard(
       cardInstanceId: resolvedCardInstanceId,
       accessToken: token,
       conversationId,
+      contextConversationId: options.contextConversationId || conversationId,
       accountId,
       storePath: options.storePath,
       createdAt: Date.now(),
@@ -840,17 +846,32 @@ export async function finishAICard(
   card: AICardInstance,
   content: string,
   log?: Logger,
+  options: { quotedRef?: QuotedRef } = {},
 ): Promise<void> {
   log?.debug?.(`[DingTalk][AICard] Starting finish, final content length=${content.length}`);
   await streamAICard(card, content, true, log);
   if (card.conversationId && content.trim() && card.accountId && card.processQueryKey) {
+    const primaryConversationId = card.contextConversationId || card.conversationId;
     cacheCardContentByProcessQueryKey(
       card.accountId,
-      card.conversationId,
+      primaryConversationId,
       card.processQueryKey,
       content,
       card.storePath,
+      options.quotedRef,
+      log,
     );
+    if (primaryConversationId !== card.conversationId) {
+      cacheCardContentByProcessQueryKey(
+        card.accountId,
+        card.conversationId,
+        card.processQueryKey,
+        content,
+        card.storePath,
+        options.quotedRef,
+        log,
+      );
+    }
   }
 }
 
@@ -860,10 +881,16 @@ function cacheCardContentByProcessQueryKey(
   processQueryKey: string,
   content: string,
   storePath?: string,
+  quotedRef?: QuotedRef,
+  log?: Logger,
 ): void {
   if (!processQueryKey.trim() || !content.trim() || !storePath) {
     return;
   }
+  log?.debug?.(
+    `[DingTalk][QuotedRef][Persist] direction=outbound scope=${conversationId} messageType=card ` +
+    `processQueryKey=${processQueryKey} quotedRef=${quotedRef ? JSON.stringify(quotedRef) : "(none)"}`,
+  );
   upsertOutboundMessageContext({
     storePath,
     accountId,
@@ -873,6 +900,7 @@ function cacheCardContentByProcessQueryKey(
     messageType: "card",
     ttlMs: DEFAULT_CARD_CONTENT_TTL_MS,
     topic: null,
+    quotedRef,
     delivery: {
       processQueryKey,
       kind: "proactive-card",

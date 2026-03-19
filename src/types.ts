@@ -286,20 +286,26 @@ export interface DingTalkInboundMessage {
   sessionWebhook: string;
 }
 
+export type QuotedRefKey = "msgId" | "processQueryKey" | "messageId" | "outTrackId" | "cardInstanceId";
+
+export interface QuotedRef {
+  targetDirection: "inbound" | "outbound";
+  key?: QuotedRefKey;
+  value?: string;
+  fallbackCreatedAt?: number;
+}
+
 /**
  * Quoted/reply message metadata extracted from repliedMsg.
  * Populated when isReplyMsg is true; downstream handlers use these fields
  * to download quoted media or look up cached card content.
  */
 export interface QuotedInfo {
-  prefix: string;
   mediaDownloadCode?: string;
   mediaType?: string;
   isQuotedFile?: boolean;
   isQuotedCard?: boolean;
   isQuotedDocCard?: boolean;
-  docSpaceId?: string;
-  docFileId?: string;
   cardCreatedAt?: number;
   processQueryKey?: string;
   fileCreatedAt?: number;
@@ -369,6 +375,7 @@ export interface SendMessageOptions {
   accountId?: string;
   storePath?: string;
   cardUpdateMode?: "append";
+  quotedRef?: QuotedRef;
   /** Force markdown/text delivery even when messageType is "card". Bypasses card
    *  creation while preserving journal writes and other side-effects. */
   forceMarkdown?: boolean;
@@ -632,6 +639,7 @@ export interface AICardInstance {
   processQueryKey?: string;
   accessToken: string;
   conversationId: string;
+  contextConversationId?: string;
   accountId?: string;
   storePath?: string;
   createdAt: number;

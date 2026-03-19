@@ -116,6 +116,11 @@ describe('send-service advanced branches', () => {
                 accountId: 'main',
                 storePath: '/tmp/sessions.json',
                 conversationId: 'cid_dm_stable',
+                quotedRef: {
+                    targetDirection: 'inbound',
+                    key: 'msgId',
+                    value: 'msg_in_1',
+                },
             } as any,
         );
 
@@ -127,6 +132,11 @@ describe('send-service advanced branches', () => {
                 createdAt: expect.any(Number),
                 messageType: 'outbound-proactive',
                 text: 'card proactive text',
+                quotedRef: {
+                    targetDirection: 'inbound',
+                    key: 'msgId',
+                    value: 'msg_in_1',
+                },
                 delivery: expect.objectContaining({
                     processQueryKey: 'card_process_real_2',
                     kind: 'proactive-card',
@@ -223,6 +233,11 @@ describe('send-service advanced branches', () => {
                 sessionWebhook: 'https://session.webhook',
                 accountId: 'main',
                 storePath: '/tmp/sessions.json',
+                quotedRef: {
+                    targetDirection: 'inbound',
+                    key: 'msgId',
+                    value: 'msg_in_2',
+                },
             } as any,
         );
 
@@ -234,6 +249,11 @@ describe('send-service advanced branches', () => {
                 createdAt: expect.any(Number),
                 messageType: 'outbound',
                 text: 'hello session',
+                quotedRef: {
+                    targetDirection: 'inbound',
+                    key: 'msgId',
+                    value: 'msg_in_2',
+                },
                 delivery: expect.objectContaining({
                     messageId: 'legacy_msg_2',
                     kind: 'session',

@@ -10,6 +10,7 @@ import {
     resolveByAlias,
     resolveByCreatedAtWindow,
     resolveByMsgId,
+    resolveByQuotedRef,
     upsertInboundMessageContext,
     upsertOutboundMessageContext,
 } from '../../src/message-context-store';
@@ -80,6 +81,92 @@ describe('message-context-store', () => {
         });
     });
 
+    it('persists quotedRef on records and resolves inbound/outbound references', () => {
+        const now = Date.now();
+
+        upsertInboundMessageContext({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quote',
+            msgId: 'msg_in_origin',
+            createdAt: now - 1000,
+            messageType: 'text',
+            text: 'origin',
+            ttlMs: 60_000,
+            topic: null,
+        });
+
+        upsertInboundMessageContext({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quote',
+            msgId: 'msg_in_reply',
+            createdAt: now,
+            messageType: 'text',
+            text: 'reply',
+            quotedRef: {
+                targetDirection: 'inbound',
+                key: 'msgId',
+                value: 'msg_in_origin',
+            },
+            ttlMs: 60_000,
+            topic: null,
+        });
+
+        upsertOutboundMessageContext({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quote',
+            createdAt: now + 1000,
+            messageType: 'outbound',
+            text: 'final reply',
+            quotedRef: {
+                targetDirection: 'inbound',
+                key: 'msgId',
+                value: 'msg_in_reply',
+            },
+            ttlMs: 60_000,
+            topic: null,
+            delivery: {
+                processQueryKey: 'pqk_quote_1',
+                kind: 'session',
+            },
+        });
+
+        expect(resolveByMsgId({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quote',
+            msgId: 'msg_in_reply',
+        })?.quotedRef).toEqual({
+            targetDirection: 'inbound',
+            key: 'msgId',
+            value: 'msg_in_origin',
+        });
+
+        expect(resolveByQuotedRef({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quote',
+            quotedRef: {
+                targetDirection: 'inbound',
+                key: 'msgId',
+                value: 'msg_in_reply',
+            },
+        })?.text).toBe('reply');
+
+        expect(resolveByQuotedRef({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quote',
+            quotedRef: {
+                targetDirection: 'outbound',
+                key: 'processQueryKey',
+                value: 'pqk_quote_1',
+            },
+        })?.text).toBe('final reply');
+    });
+
     it('resolves outbound card content by processQueryKey alias and createdAt fallback', () => {
         upsertOutboundMessageContext({
             storePath,
@@ -121,6 +208,42 @@ describe('message-context-store', () => {
             direction: 'outbound',
             windowMs: 1000,
         })?.text).toBe('card content');
+    });
+
+    it('falls back to createdAt for outbound quotedRef when alias key is missing', () => {
+        upsertOutboundMessageContext({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quoted_fallback',
+            msgId: createSyntheticOutboundMsgId(5000),
+            createdAt: 5000,
+            messageType: 'card',
+            text: 'legacy card content',
+            ttlMs: 60_000,
+            topic: null,
+        });
+
+        expect(resolveByQuotedRef({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quoted_fallback',
+            quotedRef: {
+                targetDirection: 'outbound',
+                fallbackCreatedAt: 5100,
+            },
+        })?.text).toBe('legacy card content');
+
+        expect(resolveByQuotedRef({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_quoted_fallback',
+            quotedRef: {
+                targetDirection: 'outbound',
+                key: 'processQueryKey',
+                value: 'missing_process_query_key',
+                fallbackCreatedAt: 5100,
+            },
+        })?.text).toBe('legacy card content');
     });
 
     it('cleans expired records and alias index together', () => {

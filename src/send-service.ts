@@ -25,6 +25,7 @@ import type {
   DingTalkTrackingMetadata,
   Logger,
   ProactiveMessagePayload,
+  QuotedRef,
   SendMessageOptions,
   SessionWebhookResponse,
 } from "./types";
@@ -75,6 +76,8 @@ function persistOutboundMessageContext(params: {
   text?: string;
   messageType?: string;
   createdAt?: number;
+  quotedRef?: QuotedRef;
+  log?: Logger;
   delivery: {
     messageId?: string;
     processQueryKey?: string;
@@ -86,6 +89,11 @@ function persistOutboundMessageContext(params: {
   if (!params.storePath || !params.accountId) {
     return;
   }
+  params.log?.debug?.(
+    `[DingTalk][QuotedRef][Persist] direction=outbound scope=${params.conversationId} ` +
+    `messageType=${params.messageType || "(none)"} processQueryKey=${params.delivery.processQueryKey || "(none)"} ` +
+    `messageId=${params.delivery.messageId || "(none)"} quotedRef=${params.quotedRef ? JSON.stringify(params.quotedRef) : "(none)"}`,
+  );
   upsertOutboundMessageContext({
     storePath: params.storePath,
     accountId: params.accountId,
@@ -95,8 +103,19 @@ function persistOutboundMessageContext(params: {
     messageType: params.messageType,
     ttlMs: DEFAULT_MESSAGE_CONTEXT_TTL_DAYS * 24 * 60 * 60 * 1000,
     topic: null,
+    quotedRef: params.quotedRef,
     delivery: params.delivery,
   });
+}
+
+function buildPersistedOutboundText(text: string, options: SendMessageOptions): string {
+  if (text) {
+    return text;
+  }
+  if (options.mediaPath && options.mediaType) {
+    return `[media:${options.mediaType}] ${options.mediaPath}`;
+  }
+  return text;
 }
 
 function composeCardContentForAppend(previous: string | undefined, incoming: string): string {
@@ -398,6 +417,8 @@ export async function sendProactiveMedia(
       conversationId: options.conversationId || resolvedTarget,
       text: `[media:${mediaType}] ${mediaPath}`,
       messageType: "outbound-proactive-media",
+      quotedRef: options.quotedRef,
+      log,
       delivery: {
         ...delivery,
         kind: "proactive-media",
@@ -432,10 +453,12 @@ export async function sendProactiveMedia(
     }
 
     // Fallback: ensure user still gets a usable link/path text.
+    const fallbackDisplayText = `📎 媒体发送失败，兜底链接/路径：${mediaPath}`;
+    const fallbackPersistedText = `媒体发送失败，兜底链接/路径：${mediaPath}`;
     const fallback = await sendProactiveTextOrMarkdown(
       config,
       target,
-      `📎 媒体发送失败，兜底链接/路径：${mediaPath}`,
+      fallbackDisplayText,
       options,
     ).catch((fallbackErr: any) => ({ __fallbackError: fallbackErr }));
 
@@ -443,7 +466,23 @@ export async function sendProactiveMedia(
       return { ok: false, error: `${err.message}; fallback failed: ${(fallback as any).__fallbackError?.message || "unknown"}` };
     }
 
-    return { ok: true, data: fallback, messageId: (fallback as any)?.processQueryKey || (fallback as any)?.messageId };
+    const fallbackDelivery = extractOutboundDeliveryMetadata(fallback);
+    const fallbackMessageId =
+      fallbackDelivery.messageId || fallbackDelivery.processQueryKey || fallbackDelivery.outTrackId;
+    persistOutboundMessageContext({
+      storePath: options.storePath,
+      accountId: options.accountId,
+      conversationId: options.conversationId || normalizedTarget,
+      text: fallbackPersistedText,
+      messageType: "outbound-proactive-fallback",
+      quotedRef: options.quotedRef,
+      log,
+      delivery: {
+        ...fallbackDelivery,
+        kind: isTrackingResult(fallback as ProactiveTextSendResult) ? "proactive-card" : "proactive-text",
+      },
+    });
+    return { ok: true, data: fallback, messageId: fallbackMessageId };
   }
 }
 
@@ -574,12 +613,15 @@ export async function sendMessage(
       const data = await sendBySession(config, options.sessionWebhook, text, options);
       const delivery = extractOutboundDeliveryMetadata(data);
       const messageId = delivery.messageId || delivery.processQueryKey || delivery.outTrackId;
+      const persistedText = buildPersistedOutboundText(text, options);
       persistOutboundMessageContext({
         storePath: options.storePath,
         accountId: options.accountId,
         conversationId: options.conversationId || conversationId,
-        text,
-        messageType: "outbound",
+        text: persistedText,
+        messageType: options.mediaPath && options.mediaType ? "outbound-media" : "outbound",
+        quotedRef: options.quotedRef,
+        log,
         delivery: {
           ...delivery,
           kind: "session",
@@ -597,6 +639,8 @@ export async function sendMessage(
       conversationId: options.conversationId || conversationId,
       text,
       messageType: "outbound-proactive",
+      quotedRef: options.quotedRef,
+      log,
       delivery: {
         ...delivery,
         kind: isTrackingResult(result) ? "proactive-card" : "proactive-text",
