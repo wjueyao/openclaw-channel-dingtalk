@@ -537,11 +537,11 @@ api.on("agent_to_agent_turn", (event) => {
 ## 十、实施路线图
 
 ```
-PR #317（已提交）— 基础 @mention 路由
+PR #317 — 基础 @mention 路由                        ✅ 已合入 (2026-03-19)
   ↓
-阶段 2 PR — 注册 mentions / groups / threading adapter
+阶段 2 PR — 注册 mentions / groups / threading adapter    待开发
   ↓
-阶段 3 PR — 注册 subagent hooks（agent 可 spawn 其他 agent）
+阶段 3 PR — 注册 subagent hooks（agent 可 spawn 其他 agent）  待开发
   ↓
 阶段 4a PR（路径 A）            或      阶段 4b（路径 C，依赖 #46660）
   链式 @mention 协作                    agent_to_agent_turn hook handler
@@ -550,3 +550,10 @@ PR #317（已提交）— 基础 @mention 路由
 ```
 
 每个阶段独立可合入。阶段 4a 和 4b 是替代关系——先做 4a 快速出效果，4b 合入后切换。
+
+### 并行进行中的 OpenClaw 框架 PR
+
+| PR | 内容 | 状态 |
+|---|---|---|
+| [#46660](https://github.com/openclaw/openclaw/pull/46660) | `agent_to_agent_turn` A2A hook | OPEN, 等 CI |
+| [#44868](https://github.com/openclaw/openclaw/pull/44868) | `readSessionRecentMessages` API | OPEN, 等 CI |
