@@ -41,10 +41,10 @@ export interface DingTalkConfig extends OpenClawConfig {
   dmPolicy?: "open" | "pairing" | "allowlist";
   groupPolicy?: "open" | "allowlist";
   allowFrom?: string[];
+  displayNameResolution?: "disabled" | "all";
   mediaUrlAllowlist?: string[];
   journalTTLDays?: number;
-  showThinking?: boolean;
-  thinkingMessage?: string;
+  ackReaction?: string;
   debug?: boolean;
   messageType?: "markdown" | "card";
   cardTemplateId?: string;
@@ -72,6 +72,8 @@ export interface DingTalkConfig extends OpenClawConfig {
     enabled?: boolean;
     cooldownHours?: number;
   };
+  /** Enable real-time card streaming (default false, true = 300ms throttled per-token updates) */
+  cardRealTimeStream?: boolean;
   /** AICard degrade duration in milliseconds after trigger errors (default 30m) */
   aicardDegradeMs?: number;
   /** Enable local learning loop (events/reflections/session notes/global rules) */
@@ -86,6 +88,10 @@ export interface DingTalkConfig extends OpenClawConfig {
   feedbackLearningAutoApply?: boolean;
   /** @deprecated Use learningNoteTtlMs */
   feedbackLearningNoteTtlMs?: number;
+  /** Whether to convert markdown tables to plain text for better rendering on some clients (default: true) */
+  convertMarkdownTables?: boolean;
+  /** @mention the sender after card finalization in group chats; value is the message text */
+  cardAtSender?: string;
 }
 
 /**
@@ -102,10 +108,10 @@ export interface DingTalkChannelConfig {
   dmPolicy?: "open" | "pairing" | "allowlist";
   groupPolicy?: "open" | "allowlist";
   allowFrom?: string[];
+  displayNameResolution?: "disabled" | "all";
   mediaUrlAllowlist?: string[];
   journalTTLDays?: number;
-  showThinking?: boolean;
-  thinkingMessage?: string;
+  ackReaction?: string;
   debug?: boolean;
   messageType?: "markdown" | "card";
   cardTemplateId?: string;
@@ -132,6 +138,8 @@ export interface DingTalkChannelConfig {
     enabled?: boolean;
     cooldownHours?: number;
   };
+  /** Enable real-time card streaming (default false, true = 300ms throttled per-token updates) */
+  cardRealTimeStream?: boolean;
   /** AICard degrade duration in milliseconds after trigger errors (default 30m) */
   aicardDegradeMs?: number;
   /** Enable local learning loop (events/reflections/session notes/global rules) */
@@ -146,6 +154,10 @@ export interface DingTalkChannelConfig {
   feedbackLearningAutoApply?: boolean;
   /** @deprecated Use learningNoteTtlMs */
   feedbackLearningNoteTtlMs?: number;
+  /** Whether to convert markdown tables to plain text for better rendering on some clients (default: true) */
+  convertMarkdownTables?: boolean;
+  /** @mention the sender after card finalization in group chats; value is the message text */
+  cardAtSender?: string;
 }
 
 /**
@@ -205,6 +217,14 @@ export interface DingTalkInboundMessage {
   msgId: string;
   msgtype: string;
   createAt: number;
+  /**
+   * @ 提及的用户列表（消息顶层，与 text 同级）
+   * 包含通过 @picker 选中的所有真实钉钉用户和机器人
+   * 格式: [{ dingtalkId: "$:LWCP_v1:$xxx" }]
+   */
+  atUsers?: Array<{
+    dingtalkId: string;
+  }>;
   text?: {
     content: string;
     isReplyMsg?: boolean; // 是否是回复消息
@@ -240,6 +260,7 @@ export interface DingTalkInboundMessage {
       type: string;
       text?: string;
       atName?: string;
+      atUserId?: string;
       downloadCode?: string;
     }>;
     quoteContent?: string;
@@ -265,24 +286,52 @@ export interface DingTalkInboundMessage {
   sessionWebhook: string;
 }
 
+export type QuotedRefKey = "msgId" | "processQueryKey" | "messageId" | "outTrackId" | "cardInstanceId";
+
+export interface QuotedRef {
+  targetDirection: "inbound" | "outbound";
+  key?: QuotedRefKey;
+  value?: string;
+  fallbackCreatedAt?: number;
+}
+
 /**
  * Quoted/reply message metadata extracted from repliedMsg.
  * Populated when isReplyMsg is true; downstream handlers use these fields
  * to download quoted media or look up cached card content.
  */
 export interface QuotedInfo {
-  prefix: string;
   mediaDownloadCode?: string;
   mediaType?: string;
   isQuotedFile?: boolean;
   isQuotedCard?: boolean;
   isQuotedDocCard?: boolean;
-  docSpaceId?: string;
-  docFileId?: string;
   cardCreatedAt?: number;
   processQueryKey?: string;
   fileCreatedAt?: number;
   msgId?: string;
+}
+
+/**
+ * @ 提及信息
+ */
+export interface AtMention {
+  /** @ 显示的名字（去除 @ 前缀） */
+  name: string;
+  /** 钉钉用户 ID（如果是 @ 真人） */
+  userId?: string;
+}
+
+/**
+ * Agent 名字匹配结果
+ */
+export interface AgentNameMatch {
+  /** 匹配到的 agent ID */
+  agentId: string;
+  /** 匹配来源：'name' | 'id' */
+  matchSource: "name" | "id";
+  /** 匹配到的名字 */
+  matchedName: string;
 }
 
 /**
@@ -298,6 +347,16 @@ export interface MessageContent {
   docSpaceId?: string;
   docFileId?: string;
   quoted?: QuotedInfo;
+  /** @ 提及列表（从文本或 richText 提取的名字） */
+  atMentions?: AtMention[];
+  /**
+   * 通过 @picker 选中的真实钉钉用户的 dingtalkId 列表
+   * - 仅包含真实钉钉用户和机器人，不包含 agent 名
+   * - 用于排除真人：如果 atMentions 中的名字匹配到 agent，说明是 agent；
+   *   如果没匹配到 agent 且有 atUserDingtalkIds，则可能是真人
+   * - 注意：无法将 dingtalkId 映射到具体名字，因为 webhook 不提供此映射
+   */
+  atUserDingtalkIds?: string[];
 }
 
 /**
@@ -315,8 +374,11 @@ export interface SendMessageOptions {
   mediaType?: "image" | "voice" | "video" | "file";
   accountId?: string;
   storePath?: string;
-  cardUpdateMode?: "replace" | "append" | "finalize";
-  cardFinalize?: boolean;
+  cardUpdateMode?: "append";
+  quotedRef?: QuotedRef;
+  /** Force markdown/text delivery even when messageType is "card". Bypasses card
+   *  creation while preserving journal writes and other side-effects. */
+  forceMarkdown?: boolean;
 }
 
 export interface DingTalkTrackingMetadata {
@@ -344,6 +406,18 @@ export interface SessionWebhookResponse {
 }
 
 /**
+ * Sub-agent routing options for parameterized message handling
+ */
+export interface SubAgentOptions {
+  /** The agent ID to route to */
+  agentId: string;
+  /** Prefix to add to response messages (e.g., "[AgentName] ") */
+  responsePrefix: string;
+  /** The matched agent name */
+  matchedName: string;
+}
+
+/**
  * Message handler parameters
  */
 export interface HandleDingTalkMessageParams {
@@ -353,6 +427,19 @@ export interface HandleDingTalkMessageParams {
   sessionWebhook: string;
   log?: Logger;
   dingtalkConfig: DingTalkConfig;
+  /**
+   * When set, routes message to the specified sub-agent instead of main agent.
+   * This enables reuse of the main message handling logic for sub-agents.
+   */
+  subAgentOptions?: SubAgentOptions;
+  /**
+   * Pre-downloaded media for sub-agent calls.
+   * When set, skips media download to avoid duplication in recursive calls.
+   */
+  preDownloadedMedia?: {
+    mediaPath?: string;
+    mediaType?: string;
+  };
 }
 
 /**
@@ -552,6 +639,7 @@ export interface AICardInstance {
   processQueryKey?: string;
   accessToken: string;
   conversationId: string;
+  contextConversationId?: string;
   accountId?: string;
   storePath?: string;
   createdAt: number;
@@ -679,9 +767,9 @@ export function resolveDingTalkAccount(
       dmPolicy: dingtalk?.dmPolicy,
       groupPolicy: dingtalk?.groupPolicy,
       allowFrom: dingtalk?.allowFrom,
+      displayNameResolution: dingtalk?.displayNameResolution,
       journalTTLDays: dingtalk?.journalTTLDays,
-      showThinking: dingtalk?.showThinking,
-      thinkingMessage: dingtalk?.thinkingMessage,
+      ackReaction: dingtalk?.ackReaction,
       debug: dingtalk?.debug,
       messageType: dingtalk?.messageType,
       cardTemplateId: dingtalk?.cardTemplateId,
@@ -699,6 +787,7 @@ export function resolveDingTalkAccount(
       keepAlive: dingtalk?.keepAlive,
       bypassProxyForSend: dingtalk?.bypassProxyForSend,
       proactivePermissionHint: dingtalk?.proactivePermissionHint,
+      cardRealTimeStream: dingtalk?.cardRealTimeStream,
       aicardDegradeMs: dingtalk?.aicardDegradeMs,
       learningEnabled: dingtalk?.learningEnabled ?? dingtalk?.feedbackLearningEnabled,
       learningAutoApply: dingtalk?.learningAutoApply ?? dingtalk?.feedbackLearningAutoApply,
@@ -706,6 +795,8 @@ export function resolveDingTalkAccount(
       feedbackLearningEnabled: dingtalk?.feedbackLearningEnabled,
       feedbackLearningAutoApply: dingtalk?.feedbackLearningAutoApply,
       feedbackLearningNoteTtlMs: dingtalk?.feedbackLearningNoteTtlMs,
+      convertMarkdownTables: dingtalk?.convertMarkdownTables,
+      cardAtSender: dingtalk?.cardAtSender,
     };
     return {
       ...config,

@@ -6,6 +6,14 @@ import { getAccessToken } from "./auth";
 import { stripTargetPrefix } from "./config";
 import { resolveOriginalPeerId } from "./peer-id-registry";
 import {
+  createSyntheticOutboundMsgId,
+  clearMessageContextCacheForTest,
+  DEFAULT_CARD_CONTENT_TTL_MS,
+  DEFAULT_CREATED_AT_MATCH_WINDOW_MS,
+  resolveByCreatedAtWindow,
+  upsertOutboundMessageContext,
+} from "./message-context-store";
+import {
   readNamespaceJson,
   resolveNamespacePath,
   writeNamespaceJsonAtomic,
@@ -16,20 +24,63 @@ import type {
   DingTalkConfig,
   DingTalkTrackingMetadata,
   Logger,
+  QuotedRef,
 } from "./types";
 import { AICardStatus } from "./types";
 import { formatDingTalkErrorPayloadLog, getProxyBypassOption } from "./utils";
 
 const DINGTALK_API = "https://api.dingtalk.com";
 // Thinking/tool stream snippets are truncated to keep card updates compact.
-const THINKING_TRUNCATE_LENGTH = 500;
 const CARD_STATE_FILE_VERSION = 1;
 const CARD_PENDING_NAMESPACE = "cards.active.pending";
-const CARD_PROCESS_QUERY_NAMESPACE = "cards.content.quote-process-query";
 const RECOVERY_FINALIZE_MESSAGE = "⚠️ 上一次回复处理中断，已自动结束。请重新发送你的问题。";
 const AICARD_DEGRADE_DEFAULT_MS = 30 * 60 * 1000;
+const CARD_CACHE_MAX_PER_CONVERSATION = 20;
+const CARD_CACHE_MAX_CONVERSATIONS = 500;
 
 const aicardDegradeByAccount = new Map<string, { untilMs: number; reason: string }>();
+const inMemoryCardContentStore = new Map<
+  string,
+  {
+    entries: Array<{ content: string; createdAt: number; expiresAt: number }>;
+    lastActiveAt: number;
+  }
+>();
+
+function pruneInMemoryCardContentEntries(
+  entries: Array<{ content: string; createdAt: number; expiresAt: number }>,
+  nowMs: number,
+): Array<{ content: string; createdAt: number; expiresAt: number }> {
+  return entries.filter((entry) => nowMs < entry.expiresAt).slice(-CARD_CACHE_MAX_PER_CONVERSATION);
+}
+
+function touchInMemoryCardContentBucket(scopeKey: string, nowMs: number): {
+  entries: Array<{ content: string; createdAt: number; expiresAt: number }>;
+  lastActiveAt: number;
+} {
+  const existing = inMemoryCardContentStore.get(scopeKey);
+  const bucket = existing
+    ? {
+        entries: pruneInMemoryCardContentEntries(existing.entries, nowMs),
+        lastActiveAt: nowMs,
+      }
+    : { entries: [], lastActiveAt: nowMs };
+  inMemoryCardContentStore.set(scopeKey, bucket);
+  if (inMemoryCardContentStore.size > CARD_CACHE_MAX_CONVERSATIONS) {
+    let oldestKey: string | undefined;
+    let oldestTime = Infinity;
+    for (const [key, candidate] of inMemoryCardContentStore) {
+      if (candidate.lastActiveAt < oldestTime) {
+        oldestTime = candidate.lastActiveAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) {
+      inMemoryCardContentStore.delete(oldestKey);
+    }
+  }
+  return bucket;
+}
 
 function getAICardDegradeMs(config?: DingTalkConfig): number {
   const raw = config?.aicardDegradeMs;
@@ -148,6 +199,7 @@ interface CreateAICardOptions {
   accountId?: string;
   storePath?: string;
   persistPending?: boolean;
+  contextConversationId?: string;
 }
 
 interface PendingCardRecord {
@@ -155,6 +207,7 @@ interface PendingCardRecord {
   cardInstanceId: string;
   outTrackId?: string;
   conversationId: string;
+  contextConversationId?: string;
   createdAt: number;
   lastUpdated: number;
   state: string;
@@ -262,6 +315,7 @@ function upsertPendingCard(card: AICardInstance, storePath?: string, log?: Logge
     cardInstanceId: card.cardInstanceId,
     outTrackId: card.outTrackId,
     conversationId: card.conversationId,
+    contextConversationId: card.contextConversationId,
     createdAt: card.createdAt,
     lastUpdated: card.lastUpdated,
     state: card.state,
@@ -323,22 +377,15 @@ export function formatContentForCard(content: string | undefined, type: "thinkin
     return "";
   }
 
-  // Truncate to configured length and keep a visual ellipsis when truncated.
-  const truncated =
-    content.slice(0, THINKING_TRUNCATE_LENGTH) +
-    (content.length > THINKING_TRUNCATE_LENGTH ? "…" : "");
-
-  // Quote each line to improve readability in markdown card content.
-  const quotedLines = truncated
-    .split("\n")
-    .map((line) => line.replace(/^_(?=[^ ])/, "*").replace(/(?<=[^ ])_(?=$)/, "*"))
-    .map((line) => `> ${line}`)
-    .join("\n");
-
   const emoji = type === "thinking" ? "🤔" : "🛠️";
   const label = type === "thinking" ? "思考中" : "工具执行";
 
-  return `${emoji} **${label}**\n${quotedLines}`;
+  const escaped = content
+    .split("\n")
+    .map((line) => line.replace(/^_(?=[^ ])/, "*").replace(/(?<=[^ ])_(?=$)/, "*"))
+    .join("\n");
+
+  return `${emoji} **${label}**\n\n${escaped}`;
 }
 
 async function sendTemplateMismatchNotification(
@@ -474,6 +521,7 @@ async function finalizePendingCardsByAccount(
       cardInstanceId: entry.cardInstanceId,
       accessToken: token,
       conversationId: entry.conversationId,
+      contextConversationId: entry.contextConversationId,
       accountId: entry.accountId,
       storePath,
       outTrackId: entry.outTrackId,
@@ -608,6 +656,7 @@ export async function createAICard(
       cardInstanceId: resolvedCardInstanceId,
       accessToken: token,
       conversationId,
+      contextConversationId: options.contextConversationId || conversationId,
       accountId,
       storePath: options.storePath,
       createdAt: Date.now(),
@@ -797,214 +846,54 @@ export async function finishAICard(
   card: AICardInstance,
   content: string,
   log?: Logger,
+  options: { quotedRef?: QuotedRef } = {},
 ): Promise<void> {
   log?.debug?.(`[DingTalk][AICard] Starting finish, final content length=${content.length}`);
   await streamAICard(card, content, true, log);
   if (card.conversationId && content.trim() && card.accountId && card.processQueryKey) {
+    const primaryConversationId = card.contextConversationId || card.conversationId;
     cacheCardContentByProcessQueryKey(
       card.accountId,
-      card.conversationId,
+      primaryConversationId,
       card.processQueryKey,
       content,
       card.storePath,
+      options.quotedRef,
+      log,
     );
   }
 }
 
-interface ProcessQueryCardContentEntry {
-  content: string;
-  createdAt: number;
-  expiresAt: number;
-}
-
-interface PersistedProcessQueryCardContent {
-  updatedAt: number;
-  entries: Record<string, ProcessQueryCardContentEntry>;
-}
-
-function readProcessQueryCardContent(
-  accountId: string,
-  conversationId: string,
-  storePath?: string,
-): PersistedProcessQueryCardContent {
-  if (!storePath) {
-    return { updatedAt: 0, entries: {} };
-  }
-  return readNamespaceJson<PersistedProcessQueryCardContent>(CARD_PROCESS_QUERY_NAMESPACE, {
-    storePath,
-    scope: { accountId, conversationId },
-    format: "json",
-    fallback: { updatedAt: 0, entries: {} },
-  });
-}
-
-function writeProcessQueryCardContent(
-  accountId: string,
-  conversationId: string,
-  data: PersistedProcessQueryCardContent,
-  storePath?: string,
-): void {
-  if (!storePath) {
-    return;
-  }
-  writeNamespaceJsonAtomic(CARD_PROCESS_QUERY_NAMESPACE, {
-    storePath,
-    scope: { accountId, conversationId },
-    format: "json",
-    data,
-  });
-}
-
-function purgeExpiredProcessQueryEntries(
-  persisted: PersistedProcessQueryCardContent,
-  nowMs: number,
-): boolean {
-  let changed = false;
-  for (const [key, entry] of Object.entries(persisted.entries)) {
-    if (!entry || typeof entry.expiresAt !== "number" || nowMs >= entry.expiresAt) {
-      delete persisted.entries[key];
-      changed = true;
-    }
-  }
-  return changed;
-}
-
-export function cacheCardContentByProcessQueryKey(
+function cacheCardContentByProcessQueryKey(
   accountId: string,
   conversationId: string,
   processQueryKey: string,
   content: string,
   storePath?: string,
+  quotedRef?: QuotedRef,
+  log?: Logger,
 ): void {
   if (!processQueryKey.trim() || !content.trim() || !storePath) {
     return;
   }
-  const nowMs = Date.now();
-  const persisted = readProcessQueryCardContent(accountId, conversationId, storePath);
-  purgeExpiredProcessQueryEntries(persisted, nowMs);
-  persisted.entries[processQueryKey] = {
-    content,
-    createdAt: nowMs,
-    expiresAt: nowMs + CARD_CACHE_TTL_MS,
-  };
-  persisted.updatedAt = nowMs;
-  writeProcessQueryCardContent(accountId, conversationId, persisted, storePath);
-}
-
-export function getCardContentByProcessQueryKey(
-  accountId: string,
-  conversationId: string,
-  processQueryKey: string,
-  storePath?: string,
-): string | null {
-  if (!processQueryKey.trim() || !storePath) {
-    return null;
-  }
-  const nowMs = Date.now();
-  const persisted = readProcessQueryCardContent(accountId, conversationId, storePath);
-  const changed = purgeExpiredProcessQueryEntries(persisted, nowMs);
-  const entry = persisted.entries[processQueryKey];
-  if (!entry) {
-    if (changed) {
-      persisted.updatedAt = nowMs;
-      writeProcessQueryCardContent(accountId, conversationId, persisted, storePath);
-    }
-    return null;
-  }
-  return entry.content;
-}
-
-// ============ Card content cache (for quoted card lookup) ============
-
-const CARD_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const CARD_CACHE_MAX_PER_CONVERSATION = 20;
-const CARD_CACHE_MAX_CONVERSATIONS = 500;
-const CARD_CACHE_MATCH_WINDOW_MS = 2000;
-const CARD_CONTENT_NAMESPACE = "cards.content.quote-lookup";
-
-interface CardContentEntry {
-  content: string;
-  createdAt: number;
-  expiresAt: number;
-}
-
-interface CardConversationBucket {
-  entries: CardContentEntry[];
-  lastActiveAt: number;
-}
-
-interface PersistedCardContentBucket {
-  updatedAt: number;
-  entries: CardContentEntry[];
-}
-
-const cardContentStore = new Map<string, CardConversationBucket>();
-
-function loadCardContentBucketFromPersistence(
-  accountId: string,
-  conversationId: string,
-  storePath?: string,
-): CardConversationBucket | null {
-  if (!storePath) {
-    return null;
-  }
-  const persisted = readNamespaceJson<PersistedCardContentBucket>(CARD_CONTENT_NAMESPACE, {
+  log?.debug?.(
+    `[DingTalk][QuotedRef][Persist] direction=outbound scope=${conversationId} messageType=card ` +
+    `processQueryKey=${processQueryKey} quotedRef=${quotedRef ? JSON.stringify(quotedRef) : "(none)"}`,
+  );
+  upsertOutboundMessageContext({
     storePath,
-    scope: { accountId, conversationId },
-    format: "json",
-    fallback: { updatedAt: 0, entries: [] },
-  });
-  if (!Array.isArray(persisted.entries) || persisted.entries.length === 0) {
-    return null;
-  }
-
-  const now = Date.now();
-  const entries: CardContentEntry[] = [];
-  for (const entry of persisted.entries) {
-    if (
-      !entry ||
-      typeof entry.content !== "string" ||
-      typeof entry.createdAt !== "number" ||
-      typeof entry.expiresAt !== "number" ||
-      now >= entry.expiresAt
-    ) {
-      continue;
-    }
-    const insertAt = entries.findIndex((item) => item.createdAt > entry.createdAt);
-    if (insertAt < 0) {
-      entries.push(entry);
-    } else {
-      entries.splice(insertAt, 0, entry);
-    }
-  }
-  const normalizedEntries = entries.slice(-CARD_CACHE_MAX_PER_CONVERSATION);
-
-  if (normalizedEntries.length === 0) {
-    return null;
-  }
-  return {
-    entries: normalizedEntries,
-    lastActiveAt: now,
-  };
-}
-
-function persistCardContentBucket(
-  accountId: string,
-  conversationId: string,
-  bucket: CardConversationBucket,
-  storePath?: string,
-): void {
-  if (!storePath) {
-    return;
-  }
-  writeNamespaceJsonAtomic(CARD_CONTENT_NAMESPACE, {
-    storePath,
-    scope: { accountId, conversationId },
-    format: "json",
-    data: {
-      updatedAt: Date.now(),
-      entries: bucket.entries,
-    } satisfies PersistedCardContentBucket,
+    accountId,
+    conversationId,
+    createdAt: Date.now(),
+    text: content,
+    messageType: "card",
+    ttlMs: DEFAULT_CARD_CONTENT_TTL_MS,
+    topic: null,
+    quotedRef,
+    delivery: {
+      processQueryKey,
+      kind: "proactive-card",
+    },
   });
 }
 
@@ -1015,38 +904,29 @@ export function cacheCardContent(
   createdAt: number,
   storePath?: string,
 ): void {
-  const scopedKey = `${accountId}:${conversationId}`;
-  let bucket = cardContentStore.get(scopedKey);
-  if (!bucket) {
-    bucket = { entries: [], lastActiveAt: Date.now() };
-    cardContentStore.set(scopedKey, bucket);
-    if (cardContentStore.size > CARD_CACHE_MAX_CONVERSATIONS) {
-      let oldestKey: string | undefined;
-      let oldestTime = Infinity;
-      for (const [key, b] of cardContentStore) {
-        if (b.lastActiveAt < oldestTime) {
-          oldestTime = b.lastActiveAt;
-          oldestKey = key;
-        }
-      }
-      if (oldestKey) {
-        cardContentStore.delete(oldestKey);
-      }
-    }
-  }
-  bucket.lastActiveAt = Date.now();
-
-  const now = Date.now();
-  bucket.entries = bucket.entries.filter((e) => now < e.expiresAt);
-
-  bucket.entries.push({ content, createdAt, expiresAt: now + CARD_CACHE_TTL_MS });
-
-  if (bucket.entries.length > CARD_CACHE_MAX_PER_CONVERSATION) {
-    bucket.entries.sort((a, b) => a.createdAt - b.createdAt);
+  if (!storePath) {
+    // This fallback only serves short-lived, no-storePath sessions. It is kept
+    // local to card-service instead of using the shared message context store
+    // because there is no durable scope to share across modules or restarts.
+    const scopeKey = `${accountId}:${conversationId}`;
+    const nowMs = Date.now();
+    const bucket = touchInMemoryCardContentBucket(scopeKey, nowMs);
+    bucket.entries.push({ content, createdAt, expiresAt: nowMs + DEFAULT_CARD_CONTENT_TTL_MS });
+    bucket.entries.sort((left, right) => left.createdAt - right.createdAt);
     bucket.entries = bucket.entries.slice(-CARD_CACHE_MAX_PER_CONVERSATION);
+    return;
   }
-
-  persistCardContentBucket(accountId, conversationId, bucket, storePath);
+  upsertOutboundMessageContext({
+    storePath,
+    accountId,
+    conversationId,
+    msgId: createSyntheticOutboundMsgId(createdAt),
+    createdAt,
+    text: content,
+    messageType: "card",
+    ttlMs: DEFAULT_CARD_CONTENT_TTL_MS,
+    topic: null,
+  });
 }
 
 export function findCardContent(
@@ -1055,50 +935,42 @@ export function findCardContent(
   repliedCreatedAt: number,
   storePath?: string,
 ): string | null {
-  const scopedKey = `${accountId}:${conversationId}`;
-  let bucket = cardContentStore.get(scopedKey);
-  if (!bucket && storePath) {
-    const loaded = loadCardContentBucketFromPersistence(accountId, conversationId, storePath);
-    if (loaded) {
-      cardContentStore.set(scopedKey, loaded);
-      bucket = loaded;
-      if (cardContentStore.size > CARD_CACHE_MAX_CONVERSATIONS) {
-        let oldestKey: string | undefined;
-        let oldestTime = Infinity;
-        for (const [key, b] of cardContentStore) {
-          if (b.lastActiveAt < oldestTime) {
-            oldestTime = b.lastActiveAt;
-            oldestKey = key;
-          }
-        }
-        if (oldestKey) {
-          cardContentStore.delete(oldestKey);
-        }
+  if (!storePath) {
+    const scopeKey = `${accountId}:${conversationId}`;
+    const nowMs = Date.now();
+    const bucket = inMemoryCardContentStore.get(scopeKey);
+    if (!bucket) {
+      return null;
+    }
+    bucket.entries = pruneInMemoryCardContentEntries(bucket.entries, nowMs);
+    bucket.lastActiveAt = nowMs;
+    if (bucket.entries.length === 0) {
+      inMemoryCardContentStore.delete(scopeKey);
+      return null;
+    }
+    let bestContent: string | null = null;
+    let bestDelta = Infinity;
+    for (const entry of bucket.entries) {
+      const delta = Math.abs(entry.createdAt - repliedCreatedAt);
+      if (delta <= DEFAULT_CREATED_AT_MATCH_WINDOW_MS && delta < bestDelta) {
+        bestDelta = delta;
+        bestContent = entry.content;
       }
     }
+    return bestContent;
   }
-  if (!bucket) {
-    return null;
-  }
-  bucket.lastActiveAt = Date.now();
-
-  let bestContent: string | null = null;
-  let bestDelta = Infinity;
-
-  for (const entry of bucket.entries) {
-    if (Date.now() >= entry.expiresAt) {
-      continue;
-    }
-    const delta = Math.abs(entry.createdAt - repliedCreatedAt);
-    if (delta <= CARD_CACHE_MATCH_WINDOW_MS && delta < bestDelta) {
-      bestDelta = delta;
-      bestContent = entry.content;
-    }
-  }
-
-  return bestContent;
+  const record = resolveByCreatedAtWindow({
+    storePath,
+    accountId,
+    conversationId,
+    createdAt: repliedCreatedAt,
+    windowMs: DEFAULT_CREATED_AT_MATCH_WINDOW_MS,
+    direction: "outbound",
+  });
+  return record?.text || null;
 }
 
 export function clearCardContentCacheForTest(): void {
-  cardContentStore.clear();
+  inMemoryCardContentStore.clear();
+  clearMessageContextCacheForTest();
 }

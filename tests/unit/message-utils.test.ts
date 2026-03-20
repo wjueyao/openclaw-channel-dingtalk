@@ -29,13 +29,14 @@ describe('message-utils', () => {
         expect(content.mediaType).toBe('image');
     });
 
-    it('includes quoted message prefix for reply text', () => {
+    it('keeps current reply text without injecting quoted text', () => {
         const message = {
             msgtype: 'text',
             text: {
                 content: '当前消息',
                 isReplyMsg: true,
                 repliedMsg: {
+                    msgId: 'quoted_text_1',
                     content: {
                         text: '被引用内容',
                     },
@@ -45,9 +46,8 @@ describe('message-utils', () => {
 
         const content = extractMessageContent(message);
 
-        expect(content.text).toContain('引用消息');
-        expect(content.text).toContain('被引用内容');
-        expect(content.text).toContain('当前消息');
+        expect(content.text).toBe('当前消息');
+        expect(content.quoted?.msgId).toBe('quoted_text_1');
     });
 
     it('引用文字（text msgType）— quoted prefix and current text', () => {
@@ -65,6 +65,7 @@ describe('message-utils', () => {
                 isReplyMsg: true,
                 repliedMsg: {
                     msgType: 'text',
+                    msgId: 'quoted_text_2',
                     content: { text: '被引用文字' },
                 },
             },
@@ -72,7 +73,7 @@ describe('message-utils', () => {
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('被引用文字');
+        expect(content.quoted?.msgId).toBe('quoted_text_2');
         expect(content.text).toContain('当前消息');
     });
 
@@ -100,7 +101,6 @@ describe('message-utils', () => {
 
         expect(content.quoted?.mediaDownloadCode).toBe('dl_pic_123');
         expect(content.quoted?.mediaType).toBe('image');
-        expect(content.quoted?.prefix).toContain('引用图片');
     });
 
     it('引用文件/视频/语音（unknownMsgType）— isQuotedFile, fileCreatedAt, msgId', () => {
@@ -183,7 +183,6 @@ describe('message-utils', () => {
 
         expect(content.quoted?.isQuotedDocCard).toBe(true);
         expect(content.quoted?.msgId).toBe('doc_msg_1');
-        expect(content.quoted?.prefix).toContain('钉钉文档');
     });
 
     it('引用富文本（richText msgType）— extracts summary and picture downloadCode', () => {
@@ -214,8 +213,6 @@ describe('message-utils', () => {
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('@傲小天');
-        expect(content.quoted?.prefix).toContain('测试11111');
         expect(content.quoted?.mediaDownloadCode).toBe('dl_pic_rich_1');
         expect(content.quoted?.mediaType).toBe('image');
     });
@@ -248,7 +245,6 @@ describe('message-utils', () => {
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('含2张引用图片');
         expect(content.quoted?.mediaDownloadCode).toBe('dl_pic_multi_1');
     });
 
@@ -290,8 +286,7 @@ describe('message-utils', () => {
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('引用消息不可见');
-        expect(content.quoted?.prefix).toContain('location');
+        expect(content.quoted?.msgId).toBeUndefined();
     });
 
     it('引用富文本（richText，无 msgType 向后兼容）— prefix contains text/emoji/at', () => {
@@ -316,20 +311,19 @@ describe('message-utils', () => {
                             { msgType: 'at', atName: 'Tom' },
                         ],
                     },
+                    msgId: 'legacy_rich_msg_1',
                 },
             },
         } as any;
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('你好');
-        expect(content.quoted?.prefix).toContain('😀');
-        expect(content.quoted?.prefix).toContain('@Tom');
+        expect(content.quoted?.msgId).toBe('legacy_rich_msg_1');
         expect(content.quoted?.mediaDownloadCode).toBe('dl_pic_legacy_1');
         expect(content.quoted?.mediaType).toBe('image');
     });
 
-    it('仅 originalMsgId（无 repliedMsg）— prefix contains originalMsgId', () => {
+    it('仅 originalMsgId（无 repliedMsg）— keeps originalMsgId metadata', () => {
         const message = {
             msgId: 'test',
             createAt: 0,
@@ -345,11 +339,10 @@ describe('message-utils', () => {
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('orig_msg_001');
         expect(content.quoted?.msgId).toBe('orig_msg_001');
     });
 
-    it('无 msgType 但有 content.text（向后兼容）— prefix contains old format text', () => {
+    it('无 msgType 但有 content.text（向后兼容）— preserves msgId when present', () => {
         const message = {
             msgId: 'test',
             createAt: 0,
@@ -362,16 +355,16 @@ describe('message-utils', () => {
             text: {
                 content: '当前消息',
                 isReplyMsg: true,
-                repliedMsg: { content: { text: '旧格式引用' } },
+                repliedMsg: { msgId: 'legacy_text_quote_1', content: { text: '旧格式引用' } },
             },
         } as any;
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('旧格式引用');
+        expect(content.quoted?.msgId).toBe('legacy_text_quote_1');
     });
 
-    it('quoteMessage 旧格式 — prefix from quoteMessage.text.content', () => {
+    it('quoteMessage 旧格式 — preserves quoteMessage.msgId', () => {
         const message = {
             msgId: 'test',
             createAt: 0,
@@ -382,15 +375,15 @@ describe('message-utils', () => {
             sessionWebhook: 'https://example.com',
             msgtype: 'text',
             text: { content: '当前消息' },
-            quoteMessage: { text: { content: '旧引用' } },
+            quoteMessage: { msgId: 'legacy_quote_message_1', text: { content: '旧引用' } },
         } as any;
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('旧引用');
+        expect(content.quoted?.msgId).toBe('legacy_quote_message_1');
     });
 
-    it('content.quoteContent 旧格式 — prefix from quoteContent', () => {
+    it('content.quoteContent 旧格式 — no longer injects legacy quote text', () => {
         const message = {
             msgId: 'test',
             createAt: 0,
@@ -406,7 +399,8 @@ describe('message-utils', () => {
 
         const content = extractMessageContent(message);
 
-        expect(content.quoted?.prefix).toContain('新引用');
+        expect(content.text).toBe('当前消息');
+        expect(content.quoted).toBeUndefined();
     });
 
     it('原始钉钉文档消息（interactiveCard）— extracts spaceId/fileId from biz_custom_action_url', () => {

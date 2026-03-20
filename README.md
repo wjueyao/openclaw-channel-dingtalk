@@ -39,6 +39,7 @@
 - [使用示例](#使用示例)
 - [故障排除](#故障排除)
 - [开发指南](#开发指南)
+- [架构与职责边界](#架构与职责边界)
 - [测试](#测试)
 - [许可](#许可)
 
@@ -48,11 +49,60 @@
 - ✅ **私聊支持** — 直接与机器人对话
 - ✅ **群聊支持** — 在群里 @机器人
 - ✅ **多种消息类型** — 文本、图片、语音（自带识别）、视频、文件、钉钉文档/钉盘文件卡片
+- ✅ **附件文本抽取** — 对常见文本类附件以及 `PDF/DOCX` 自动抽取正文并注入当前会话上下文
 - ✅ **引用消息支持** — 支持恢复大多数引用场景（文字/图片/图文/文件/视频/语音/AI 卡片）；单聊中的钉钉文档依赖权限 **Storage.DownloadInfo.Read**；群聊支持引用群图片、文件/文档（优先命中已持久化索引，未命中时走群文件 API 兜底），其中群文件相关能力需 **ConvFile.Space.Read**、**Storage.File.Read**、**Storage.DownloadInfo.Read**、**Contact.User.Read**，且兜底链路受时间窗口与企业认证限制
 - ✅ **Markdown 回复** — 支持富文本格式回复
 - ✅ **Markdown 表格兼容** — 自动把 Markdown 表格转换为钉钉更稳定的可读文本
 - ✅ **互动卡片** — 支持流式更新，适用于 AI 实时输出
 - ✅ **完整 AI 对话** — 接入 Clawdbot 消息处理管道
+- ✅ **@多助手路由** — 在群聊中通过 `@助手名` 路由到不同的 agent（实验性功能）
+
+### @多助手路由（实验性）
+
+> ⚠️ **实验性功能**：此功能使用框架层 `agents.list` 配置实现，与框架的 `bindings` 机制独立运作。
+
+在群聊中，用户可以通过 `@助手名` 来指定要对话的 agent。每个 agent 拥有独立的 session。
+
+```
+用户: @frontend 帮我看看这个组件的问题
+[frontend] 好的，请贴出代码...
+
+用户: @dba 数据库慢查询怎么处理？
+[dba] 从数据库角度分析...
+```
+
+#### 配置方式
+
+在 OpenClaw 配置文件中配置 `agents.list`：
+
+```json
+{
+  "agents": {
+    "list": [
+      { "id": "main", "name": "助手", "default": true },
+      { "id": "frontend", "name": "前端专家" },
+      { "id": "dba", "name": "DBA" }
+    ]
+  }
+}
+```
+
+#### 当前功能范围
+
+- @mention 解析 → agent 名匹配（支持 `name` 和 `id`）
+- 路由到独立 agent session
+- 回复自动添加 `[助手名]` 前缀
+
+#### 后续迭代计划
+
+- 群聊历史上下文注入（被 @ 的 agent 能看到近期对话）
+- 多专家协作讨论（专家间链式 @mention、讨论记录共享）
+- `/agents` 命令列出可用专家
+
+#### 已知限制
+
+- sub-agent 路由使用框架的 `buildAgentSessionKey` API，不通过 `bindings` 配置匹配
+- 与框架顶层的 `bindings` 配置**独立运作**，同时配置两者可能导致混淆
 
 ### 进程级（memory-only）运行态说明
 
@@ -373,13 +423,14 @@ openclaw configure --section channels
       "agentId": "123456789",
       "dmPolicy": "open",
       "groupPolicy": "open",
+      "displayNameResolution": "disabled", // 或 "all"；启用后可能因重名/旧名称/权限边界限制导致误解析
       "journalTTLDays": 7,
-      "showThinking": true, // 仅 markdown 模式生效
-      "thinkingMessage": "🤔 思考中，请稍候...", // 仅 markdown 模式生效；设为 "emoji" 可启用随机颜文字彩蛋
+      "ackReaction": "🤔思考中", // 给原消息贴处理中的表情反馈；设为 "" 可关闭
       "debug": false,
       "messageType": "markdown", // 或 "card"
       // "mediaMaxMb": 20,  // 可选：接收文件大小上限（MB），默认 5 MB
       // "aicardDegradeMs": 1800000, // 可选：AI 卡片失败后降级持续时间（毫秒，默认 30 分钟）
+      // "cardRealTimeStream": false, // 可选：开启真流式卡片更新（默认 false，开启后 API 调用量增加约 2-3 倍）
       // 仅card需要配置
       "cardTemplateId": "你复制的模板ID",
       "cardTemplateKey": "你模板的内容变量"
@@ -410,13 +461,18 @@ openclaw gateway restart
 | `dmPolicy`              | string   | `"open"`     | 私聊策略：open/pairing/allowlist            |
 | `groupPolicy`           | string   | `"open"`     | 群聊策略：open/allowlist                    |
 | `allowFrom`             | string[] | `[]`         | 允许的发送者 ID 列表                        |
+| `displayNameResolution` | string   | `"disabled"` | 基于本地通讯录存储的显示名/群名解析开关：disabled/all |
+| `bypassProxyForSend`    | boolean  | `false`      | 发送链路直连，不走全局代理                  |
+| `learningEnabled`       | boolean  | `false`      | 开启学习信号采集与学习提示注入              |
+| `learningAutoApply`     | boolean  | `false`      | 自动将学习笔记注入当前会话                  |
+| `learningNoteTtlMs`     | number   | `21600000`   | 会话级学习笔记有效期（毫秒）                |
 | `mediaUrlAllowlist`     | string[] | `[]`         | 允许通过 `mediaUrl` 下载的主机/IP/CIDR 白名单 |
 | `journalTTLDays`        | number   | `7`          | `originalMsgId` 文本回溯日志的保留天数      |
-| `showThinking`          | boolean  | `true`       | 是否发送“思考中”提示消息（仅 markdown 模式生效） |
-| `thinkingMessage`       | string   | `"🤔 思考中，请稍候..."` | 自定义“思考中”提示文案（showThinking 开启时生效，仅 markdown 模式）；设为 `"emoji"` 可按用户语气返回随机颜文字 |
+| `ackReaction`          | string   | -            | 官方 `ackReaction` 配置入口；设为 `""` 可关闭；设为 `"emoji"` 时按输入语气自动选表情 |
 | `messageType`           | string   | `"markdown"` | 消息类型：markdown/card                     |
 | `cardTemplateId`        | string   |              | AI 互动卡片模板 ID（仅当 messageType=card） |
 | `cardTemplateKey`       | string   | `"content"`  | 卡片模板内容字段键（仅当 messageType=card） |
+| `cardRealTimeStream`    | boolean  | `false`      | 开启真流式卡片更新（300ms 节流，首 token 快、流畅但 API 调用更多）。详见下方说明 |
 | `aicardDegradeMs`       | number   | `1800000`    | AI 卡片连续失败后进入降级模式的持续时间（毫秒） |
 | `debug`                 | boolean  | `false`      | 是否开启调试日志                            |
 | `mediaMaxMb`            | number   | -            | 接收文件大小上限（MB），不设则使用 runtime 默认值（5 MB） |
@@ -425,29 +481,44 @@ openclaw gateway restart
 | `maxReconnectDelay`     | number   | `60000`      | 最大重连延迟（毫秒）                        |
 | `reconnectJitter`       | number   | `0.3`        | 重连延迟抖动因子（0-1）                     |
 
-### `thinkingMessage` 彩蛋（`emoji`）
+关于 `displayNameResolution`：
 
-当 `messageType` 为 `markdown` 且 `showThinking=true` 时，可将 `thinkingMessage` 设为 `"emoji"`，让机器人根据用户当前输入语气随机返回颜文字，替代默认的“🤔 思考中，请稍候...”。
+- `disabled`：默认值。发送目标必须使用显式 ID，例如 `conversationId`、`staffId`、`user:manager8031`
+- `all`：允许插件使用本地通讯录存储做群显示名/用户显示名解析
+- learned directory 数据来自入站消息观测，并按 `accountId` 落盘到 `targets.directory`
+- 当前上游 target resolver 还没有把 requester owner/authz 上下文传到插件，因此暂不提供 owner-only 模式
+- 开启后存在误投风险：显示名可能重名、后来改名，或本地目录还停留在旧观测值
+- 开启后存在权限扩散风险：当前 `all` 会对所有能进入发送链路的调用方生效，不是 owner-only
+- 对敏感通知、不可撤回消息或高风险自动化，建议继续使用显式 ID 而不是显示名
+
+### 钉钉原生“思考中”表情反馈
+
+当 `ackReaction` 为非空字符串时，插件会在处理开始时给用户原消息添加一条钉钉原生文本表情反馈，并在处理结束后自动撤回。该增强不会阻断主流程：贴表情或撤表情失败时只记录日志，仍继续正常回复。
+
+> 设计/实现参考自 `DingTalk-Real-AI/dingtalk-openclaw-connector`（MIT）：
+> <https://github.com/DingTalk-Real-AI/dingtalk-openclaw-connector>
+
+说明：
+
+- `markdown` 和 `card` 模式都可启用
+- 该反馈作用于用户原消息，不会额外发送一条“思考中”消息
+- 解析顺序与官方一致：`channels.dingtalk.accounts.<accountId>.ackReaction` -> `channels.dingtalk.ackReaction` -> `messages.ackReaction` -> `agents.list[].identity.emoji`
+- 若上述路径都未配置，则不发送 ack reaction
+- 当最终解析值为 `emoji` 时，钉钉插件会按当前输入语气自动选择一条颜文字 reaction
+- 当前钉钉实现底层走 `emotion/reply` / `emotion/recall`，会把解析出的 `ackReaction` 文本原样写入 `emotionName` / `textEmotion.emotionName`
+- 若配置值为 `🤔思考中`，效果与钉钉原生“思考中”反馈一致；配置为其他文本时，会按该文本发送对应的 ack reaction
 
 示例：
 
-```json5
+```json
 {
   "channels": {
     "dingtalk": {
-      "showThinking": true,
-      "messageType": "markdown",
-      "thinkingMessage": "emoji"
+      "ackReaction": "emoji"
     }
   }
 }
 ```
-
-> 说明：这是一个轻量彩蛋功能，仅影响 markdown 模式下的“思考中”提示；`messageType="card"` 时不会发送该独立提示消息。
-| `bypassProxyForSend`    | boolean  | `false`      | 仅对 send/card/upload 出站请求绕过系统 HTTP(S) 代理 |
-| `learningEnabled` | boolean | `false`    | 启用本地学习闭环（事件、反思、会话笔记、全局规则） |
-| `learningAutoApply` | boolean | `false` | 是否将反思自动注入会话/全局规则；默认只采集不生效 |
-| `learningNoteTtlMs` | number | `21600000` | 会话级学习笔记有效期（毫秒，默认 6 小时） |
 
 ### 连接鲁棒性配置
 
@@ -728,14 +799,22 @@ node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json
 | 图片         | ✅   | 下载并传递给 AI                                                          |
 | 语音         | ✅   | 使用钉钉语音识别结果                                                     |
 | 视频         | ✅   | 下载并传递给 AI                                                          |
-| 文件         | ✅   | 下载并传递给 AI                                                          |
-| 钉钉文档/钉盘文件卡片 | ✅ | 解析 `interactiveCard` 中的 `biz_custom_action_url`，提取 `spaceId/fileId` 后按文件消息下载 |
+| 文件         | ✅   | 下载并传递给 AI；文本类附件会额外抽取正文并注入上下文                   |
+| 钉钉文档/钉盘文件卡片 | ✅ | 解析 `interactiveCard` 中的 `biz_custom_action_url`，提取 `spaceId/fileId` 后按文件消息下载；可对 `PDF/DOCX` 补充正文抽取 |
 | 引用文字     | ✅   | 提取被引用文本作为上下文前缀                                             |
 | 引用图片     | ✅   | 使用引用回调自带的 `downloadCode` 下载并传递给 AI                        |
 | 引用图文     | ✅   | 解析 `richText` 引用内容，提取文本摘要与图片 `downloadCode`              |
 | 引用文件/视频/语音 | ✅ | 单聊按 `msgId` 精确恢复；群聊优先查已固化元数据，首次未命中时走群文件 API 兜底（兜底链路依赖时间窗口匹配，不保证 100% 命中） |
 | 引用钉钉文档/钉盘文件卡片 | ⚠️ | 单聊支持；群聊支持缓存命中与群文件 API 兜底恢复，但仍受钉钉回调样本与企业认证限制 |
 | 引用 AI 卡片 | ✅   | 仅指机器人自己发送的 AI 卡片；按 `carrierId ↔ originalProcessQueryKey` 精确恢复 |
+
+> **附件正文抽取实现说明**
+>
+> 当前实现采用固定策略：
+>
+> - 仅处理 **2MB 以下**附件（超过上限会跳过正文抽取）
+> - 抽取结果最多注入 **6000 字符**（超出部分会标记为“内容已截断”）
+> - 抽取失败仅记录 `warn` 日志，不阻断原有媒体传递与回复链路
 
 > **引用消息实现说明**
 >
@@ -853,30 +932,32 @@ node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json
 | 阶段         | API 调用               | 说明                                                |
 | ------------ | ---------------------- | --------------------------------------------------- |
 | **创建卡片** | 1                      | `POST /v1.0/card/instances/createAndDeliver`        |
-| **流式更新** | M                      | M = 回复块数量，每块一次 `PUT /v1.0/card/streaming` |
+| **流式更新** | M                      | M = 取决于流式模式（见下方说明），每次 `PUT /v1.0/card/streaming` |
 | **完成卡片** | 包含在最后一次流更新中 | 使用 `isFinalize=true` 标记                         |
-| **总计**     | **1 + M**              | M = Agent 产生的回复块数                            |
+| **总计**     | **1 + M**              | M 由 `cardStreamThrottleMs` 决定                    |
 
 ### 典型场景成本对比
 
-| 场景             | Text/Markdown | Card | 节省   |
-| ---------------- | ------------- | ---- | ------ |
-| 简短回复（1 块） | 2             | 2    | ✓ 相同 |
-| 中等回复（5 块） | 6             | 6    | ✓ 相同 |
-| 长回复（10 块）  | 12            | 11   | ✓ 1 次 |
+以一次 10 秒的 AI 回复为例：
+
+| 流式模式                               | `streamAICard` 调用数 | 首 token 延迟 | 流畅度 |
+| -------------------------------------- | --------------------- | ------------- | ------ |
+| Block 缓冲（`cardRealTimeStream: false`，默认） | ~10-15 次   | ~1-1.5s       | 卡顿   |
+| 真流式（`cardRealTimeStream: true`）            | ~30 次      | ~300ms        | 流畅   |
 
 ### 优化策略
 
 **降低 API 调用的方法：**
 
-1. **合并回复块** — 通过调整 Agent 输出配置，减少块数量
-2. **使用缓存** — Token 自动缓存（60 秒），无需每次都获取
-3. **Buffer 模式** — 使用 `dispatchReplyWithBufferedBlockDispatcher` 合并多个小块
+1. **保持默认** — `cardRealTimeStream: false`（block 缓冲模式），API 调用量最少
+2. **开启真流式** — `cardRealTimeStream: true`，体验更好但 API 调用约多 2-3 倍
+3. **使用缓存** — Token 自动缓存（60 秒），无需每次都获取
 
 **成本建议：**
 
-- ✅ **推荐** — Card 模式：流式体验更好，成本与 Text/Markdown 相当或更低
-- ⚠️ **谨慎** — 频繁调用需要监测配额，建议使用钉钉开发者后台查看 API 调用量
+- ✅ **默认** — Block 缓冲模式：API 调用最少，适合对 API 配额敏感的场景
+- ✅ **推荐体验** — `cardRealTimeStream: true`：首 token 快、打字机效果流畅，适合重视用户体验的场景
+- ⚠️ **注意** — 频繁调用需要监测配额，建议使用钉钉开发者后台查看 API 调用量
 
 ## 消息类型选择
 
@@ -905,9 +986,20 @@ node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json
 当配置 `messageType: 'card'` 时：
 
 1. 使用 `/v1.0/card/instances/createAndDeliver` 创建并投放卡片
-2. 使用 `/v1.0/card/streaming` 实现真正的流式更新
+2. 使用 `/v1.0/card/streaming` 实现流式更新
 3. 自动状态管理（PROCESSING → INPUTING → FINISHED）
-4. 更稳定的流式体验，无需手动节流
+4. 内置 300ms 节流 + 单航班（single-flight）保护，避免 API 过载
+
+**卡片流式模式 (`cardRealTimeStream`)：**
+
+插件支持两种卡片更新策略，通过 `cardRealTimeStream` 配置：
+
+| 值 | 模式 | 说明 |
+| -- | ---- | ---- |
+| `false`（默认） | Block 缓冲 | runtime 攒够一定量文本后回调一次，API 调用最少，但首 token 延迟较高（~1-1.5s），更新较卡顿 |
+| `true` | 真流式 | 每 300ms 最多一次卡片更新 PUT，首 token 延迟低（~300ms），打字机效果流畅。API 调用量约为 block 模式的 2-3 倍 |
+
+> **API 调用量参考**：以一次 10 秒的 AI 回复为例，真流式约产生 ~30 次 `streamAICard` PUT，block 模式约 ~10-15 次。钉钉企业内部应用的 QPS 限制为 40 次/秒，真流式的峰值约 3.3 次/秒，远低于限制。
 
 **AI Card 持久化与恢复机制（v3.2.x）：**
 
@@ -941,6 +1033,7 @@ node scripts/feedback-learning-debug.mjs --storePath /path/to/session-store.json
   messageType: 'card', // 启用 AI 互动卡片模式
   cardTemplateId: '382e4302-551d-4880-bf29-a30acfab2e71.schema', // AI 卡片模板 ID（默认值）
   cardTemplateKey: 'content', // 卡片内容字段键（默认值：content）
+  // cardRealTimeStream: false, // 开启真流式卡片更新（默认 false）
 }
 ```
 
@@ -1311,15 +1404,28 @@ await sendProactiveMedia(config, 'cidxxxxxxxx', '/absolute/path/to/photo.png', '
 });
 ```
 
-### 架构
+## 架构与职责边界
 
-插件遵循 Telegram 参考实现的架构模式：
+仓库整体架构、模块职责边界、增量迁移策略和新功能落位建议，以 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 为准。
+中文版本见 [`docs/ARCHITECTURE.zh-CN.md`](docs/ARCHITECTURE.zh-CN.md)。
 
-- **index.ts**: 最小化插件注册入口
-- **src/channel.ts**: 所有 DingTalk 特定的逻辑（API、消息处理、配置等）
-- **src/runtime.ts**: 运行时管理（getter/setter）
-- **src/types.ts**: 类型定义
-- **utils.ts**: 通用工具函数
+协作时建议优先把握这些总原则：
+
+- 先遵守逻辑功能分区，再做物理目录迁移
+- `src/channel.ts` 保持为装配层，避免继续堆积业务逻辑
+- 新功能应优先落到清晰的业务域，而不是继续平铺到 `src/` 根目录
+- 结构重排尽量与行为改动拆分，降低进行中 PR 的冲突面
+- 对存量代码采用渐进迁移策略，不要求一次性整体搬迁
+
+计划中的目录分区摘要：
+
+- `gateway/`: Stream 连接、回调注册、入站事件入口与启停时序
+- `targeting/`: `conversationId`、peer、session alias、目标解析与群目录能力
+- `messaging/`: 入站内容提取、reply strategy、文本/markdown/media 发送与消息上下文
+- `card/`: AI Card 创建、流式更新、结束态、恢复与缓存
+- `command/`: slash 命令、feedback learning、target rule 与后续扩展命令能力
+- `platform/`: config、auth、runtime、logger、types 等底层平台能力
+- `shared/`: 跨领域复用的持久化原语、dedup 与通用工具
 
 ## 测试
 

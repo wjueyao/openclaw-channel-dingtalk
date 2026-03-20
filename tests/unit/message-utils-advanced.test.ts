@@ -20,11 +20,11 @@ describe('message-utils advanced extraction', () => {
         );
     });
 
-    it('extracts legacy quoteMessage and quoteContent prefixes', () => {
+    it('extracts legacy quoteMessage msgId without injecting quote text', () => {
         const legacy = extractMessageContent({
             msgtype: 'text',
             text: { content: '当前消息' },
-            quoteMessage: { text: { content: '旧引用' } },
+            quoteMessage: { msgId: 'legacy_quote_1', text: { content: '旧引用' } },
         } as any);
 
         const modern = extractMessageContent({
@@ -33,8 +33,26 @@ describe('message-utils advanced extraction', () => {
             content: { quoteContent: '新引用' },
         } as any);
 
-        expect(legacy.text).toContain('旧引用');
-        expect(modern.text).toContain('新引用');
+        expect(legacy.text).toBe('当前消息');
+        expect(legacy.quoted?.msgId).toBe('legacy_quote_1');
+        expect(modern.text).toBe('当前消息');
+        expect(modern.quoted).toBeUndefined();
+    });
+
+    it('does not expose an empty quoted object when replied text has no usable metadata', () => {
+        const result = extractMessageContent({
+            msgtype: 'text',
+            text: {
+                content: '当前消息',
+                isReplyMsg: true,
+                repliedMsg: {
+                    content: { text: '旧引用正文' },
+                },
+            },
+        } as any);
+
+        expect(result.text).toBe('当前消息');
+        expect(result.quoted).toBeUndefined();
     });
 
     it('falls back for unknown msgtype', () => {

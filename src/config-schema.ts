@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DEFAULT_JOURNAL_TTL_DAYS } from "./quote-journal";
+import { DEFAULT_MESSAGE_CONTEXT_TTL_DAYS } from "./message-context-store";
 
 const DingTalkAccountConfigShape = {
   /** Account name (optional display name) */
@@ -32,16 +32,15 @@ const DingTalkAccountConfigShape = {
   /** List of allowed user IDs for allowlist policy */
   allowFrom: z.array(z.string()).optional(),
 
+  /** Default disabled. Enabling "all" allows learned displayName lookup but may misroute on stale/duplicate names and is available to all callers until upstream exposes requester authz context. */
+  displayNameResolution: z.enum(["disabled", "all"]).optional().default("disabled"),
+
   mediaUrlAllowlist: z.array(z.string()).optional(),
 
-  /** Show thinking indicator while processing (markdown mode only) */
-  showThinking: z.boolean().optional().default(true),
+  /** Official OpenClaw ackReaction entry for processing feedback; empty string disables it */
+  ackReaction: z.string().optional(),
 
-  journalTTLDays: z.number().int().min(1).optional().default(DEFAULT_JOURNAL_TTL_DAYS),
-
-  /** Custom thinking message content when showThinking is enabled (markdown mode only) */
-  thinkingMessage: z.string().optional().default("🤔 思考中，请稍候..."),
-
+  journalTTLDays: z.number().int().min(1).optional().default(DEFAULT_MESSAGE_CONTEXT_TTL_DAYS),
   /** Enable debug logging */
   debug: z.boolean().optional().default(false),
 
@@ -108,6 +107,10 @@ const DingTalkAccountConfigShape = {
     .optional()
     .default({ enabled: true, cooldownHours: 24 }),
 
+  /** Enable real-time card streaming (default: false).
+   *  When true, card updates are streamed per-token with 300ms throttle for a smoother experience, at the cost of more API calls. */
+  cardRealTimeStream: z.boolean().optional().default(false),
+
   /** AICard degrade duration in milliseconds after trigger errors (default: 30 minutes) */
   aicardDegradeMs: z.number().int().min(60_000).optional().default(30 * 60 * 1000),
 
@@ -128,6 +131,14 @@ const DingTalkAccountConfigShape = {
 
   /** @deprecated Use learningNoteTtlMs */
   feedbackLearningNoteTtlMs: z.number().int().min(60_000).optional(),
+
+  /** Whether to convert markdown tables to plain text for better rendering on some clients (default: true) */
+  convertMarkdownTables: z.boolean().optional().default(true),
+
+  /** @mention the sender after card finalization in group chats.
+   *  Set to a non-empty string (e.g. "✅ 回复完成") to enable — the value is used as the message text.
+   *  Leave empty or omit to disable. */
+  cardAtSender: z.string().optional(),
 } as const;
 
 const DingTalkAccountConfigSchema = z.object(DingTalkAccountConfigShape);

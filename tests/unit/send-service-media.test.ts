@@ -5,14 +5,17 @@ vi.mock('../../src/auth', () => ({
     getAccessToken: vi.fn().mockResolvedValue('token_abc'),
 }));
 
-const quoteJournalMocks = vi.hoisted(() => ({
-    appendProactiveOutboundJournalMock: vi.fn(),
+const messageContextMocks = vi.hoisted(() => ({
+    upsertOutboundMessageContextMock: vi.fn(),
 }));
 
-vi.mock('../../src/quote-journal', () => ({
-    appendOutboundToQuoteJournal: vi.fn(),
-    appendProactiveOutboundJournal: quoteJournalMocks.appendProactiveOutboundJournalMock,
-}));
+vi.mock('../../src/message-context-store', async () => {
+    const actual = await vi.importActual<typeof import('../../src/message-context-store')>('../../src/message-context-store');
+    return {
+        ...actual,
+        upsertOutboundMessageContext: messageContextMocks.upsertOutboundMessageContextMock,
+    };
+});
 
 vi.mock('../../src/media-utils', () => ({
     uploadMedia: vi.fn(),
@@ -38,10 +41,11 @@ const mockedGetVoiceDurationMs = vi.mocked(getVoiceDurationMs);
 describe('send-service media branches', () => {
     beforeEach(() => {
         mockedAxios.mockReset();
+        (mockedAxios as any).isAxiosError = (err: unknown) => Boolean((err as { isAxiosError?: boolean })?.isAxiosError);
         mockedUploadMedia.mockReset();
         mockedGetVoiceDurationMs.mockReset();
         mockedGetVoiceDurationMs.mockResolvedValue(1000);
-        quoteJournalMocks.appendProactiveOutboundJournalMock.mockReset();
+        messageContextMocks.upsertOutboundMessageContextMock.mockReset();
     });
 
     it('sendBySession uses native image body when upload succeeds', async () => {
@@ -150,16 +154,69 @@ describe('send-service media branches', () => {
             'user_123',
             '/tmp/a.amr',
             'voice',
-            { accountId: 'main', storePath: '/tmp/sessions.json' } as any,
+            {
+                accountId: 'main',
+                storePath: '/tmp/sessions.json',
+                quotedRef: {
+                    targetDirection: 'inbound',
+                    key: 'msgId',
+                    value: 'msg_in_media_1',
+                },
+            } as any,
         );
 
-        expect(quoteJournalMocks.appendProactiveOutboundJournalMock).toHaveBeenCalledWith(
+        expect(messageContextMocks.upsertOutboundMessageContextMock).toHaveBeenCalledWith(
             expect.objectContaining({
                 storePath: '/tmp/sessions.json',
                 accountId: 'main',
                 conversationId: 'user_123',
-                messageId: 'q_voice_2',
+                createdAt: expect.any(Number),
                 messageType: 'outbound-proactive-media',
+                quotedRef: {
+                    targetDirection: 'inbound',
+                    key: 'msgId',
+                    value: 'msg_in_media_1',
+                },
+                delivery: expect.objectContaining({
+                    processQueryKey: 'q_voice_2',
+                    kind: 'proactive-media',
+                }),
+            }),
+        );
+    });
+
+    it('persists proactive media fallback text without emoji prefix', async () => {
+        mockedUploadMedia.mockResolvedValueOnce('media_file_fallback');
+        mockedAxios
+            .mockRejectedValueOnce({
+                message: 'upload send failed',
+                response: { status: 500, statusText: 'Server Error', data: { code: 'system.err' } },
+                isAxiosError: true,
+            })
+            .mockResolvedValueOnce({ data: { processQueryKey: 'fallback_q_1' } } as any);
+
+        const result = await sendProactiveMedia(
+            { clientId: 'id', clientSecret: 'sec', robotCode: 'id' } as any,
+            'user_123',
+            '/tmp/a.pdf',
+            'file',
+            {
+                accountId: 'main',
+                storePath: '/tmp/sessions.json',
+            } as any,
+        );
+
+        expect(result.ok).toBe(true);
+        expect(messageContextMocks.upsertOutboundMessageContextMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                storePath: '/tmp/sessions.json',
+                accountId: 'main',
+                conversationId: 'user_123',
+                text: '媒体发送失败，兜底链接/路径：/tmp/a.pdf',
+                messageType: 'outbound-proactive-fallback',
+                delivery: expect.objectContaining({
+                    processQueryKey: 'fallback_q_1',
+                }),
             }),
         );
     });

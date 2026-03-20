@@ -69,6 +69,29 @@ describe('DingTalkConfigSchema', () => {
         expect(parsed.accounts.main?.mediaUrlAllowlist).toEqual(['192.168.1.23', 'files.internal.example']);
     });
 
+    it('defaults displayNameResolution to disabled', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            clientId: 'id',
+            clientSecret: 'secret',
+        }) as { displayNameResolution?: string };
+
+        expect(parsed.displayNameResolution).toBe('disabled');
+    });
+
+    it('accepts displayNameResolution for account config', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            accounts: {
+                main: {
+                    clientId: 'id',
+                    clientSecret: 'secret',
+                    displayNameResolution: 'all',
+                },
+            },
+        }) as { accounts: Record<string, { displayNameResolution?: string }> };
+
+        expect(parsed.accounts.main?.displayNameResolution).toBe('all');
+    });
+
     it('keeps keepAlive undefined when omitted', () => {
         const parsed = DingTalkConfigSchema.parse({
             clientId: 'id',
@@ -141,6 +164,23 @@ describe('DingTalkConfigSchema', () => {
         expect(parsed.feedbackLearningEnabled).toBe(true);
         expect(parsed.feedbackLearningAutoApply).toBe(true);
         expect(parsed.feedbackLearningNoteTtlMs).toBe(120000);
+    });
+
+    it('accepts ackReaction config without injecting a schema default', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            clientId: 'id',
+            clientSecret: 'secret',
+            ackReaction: '✅',
+        }) as { ackReaction?: string };
+
+        expect(parsed.ackReaction).toBe('✅');
+
+        const defaults = DingTalkConfigSchema.parse({
+            clientId: 'id',
+            clientSecret: 'secret',
+        }) as { ackReaction?: string };
+
+        expect(defaults.ackReaction).toBeUndefined();
     });
 
     it('exports control-ui-compatible JSON schema nodes', () => {

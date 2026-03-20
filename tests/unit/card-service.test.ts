@@ -25,7 +25,6 @@ import {
     finalizeActiveCardsForAccount,
     finishAICard,
     formatContentForCard,
-    getCardContentByProcessQueryKey,
     getAICardDegradeState,
     isAICardDegraded,
     recoverPendingCardsForAccount,
@@ -33,6 +32,7 @@ import {
     streamAICard,
 } from '../../src/card-service';
 import { getAccessToken } from '../../src/auth';
+import { resolveByAlias } from '../../src/message-context-store';
 import { resolveNamespacePath } from '../../src/persistence-store';
 import { AICardStatus } from '../../src/types';
 
@@ -283,9 +283,48 @@ describe('card-service', () => {
 
         await finishAICard(card, 'final text');
 
-        expect(getCardContentByProcessQueryKey('main', 'cidA1B2C3', 'carrier_quoted', storePath)).toBe(
-            'final text'
-        );
+        expect(resolveByAlias({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cidA1B2C3',
+            kind: 'processQueryKey',
+            value: 'carrier_quoted',
+        })?.text).toBe('final text');
+    });
+
+    it('finishAICard persists direct-chat card content by context conversation scope', async () => {
+        mockedAxios.put.mockResolvedValueOnce({ status: 200, data: { ok: true } });
+
+        const card = {
+            cardInstanceId: 'card_dm_scope',
+            processQueryKey: 'carrier_dm_scope',
+            accessToken: 'token_abc',
+            conversationId: 'manager8031',
+            contextConversationId: 'cid_dm_stable_1',
+            accountId: 'main',
+            storePath,
+            createdAt: Date.now(),
+            lastUpdated: Date.now(),
+            state: AICardStatus.INPUTING,
+            config: { cardTemplateKey: 'content' },
+        } as any;
+
+        await finishAICard(card, 'dm final text');
+
+        expect(resolveByAlias({
+            storePath,
+            accountId: 'main',
+            conversationId: 'cid_dm_stable_1',
+            kind: 'processQueryKey',
+            value: 'carrier_dm_scope',
+        })?.text).toBe('dm final text');
+        expect(resolveByAlias({
+            storePath,
+            accountId: 'main',
+            conversationId: 'manager8031',
+            kind: 'processQueryKey',
+            value: 'carrier_dm_scope',
+        })).toBeNull();
     });
 
     it('streamAICard marks FAILED and sends mismatch notification on 500 unknownError', async () => {
@@ -371,13 +410,27 @@ describe('card-service', () => {
         expect(card.state).toBe(AICardStatus.FINISHED);
     });
 
-    it('formatContentForCard truncates and annotates content', () => {
+    it('formatContentForCard preserves full content without truncation', () => {
         const content = `${'x'.repeat(510)}`;
         const result = formatContentForCard(content, 'thinking');
 
-        expect(result).toContain('思考中');
-        expect(result).toContain('> ');
-        expect(result.endsWith('…')).toBe(true);
+        expect(result).toContain('🤔 **思考中**');
+        expect(result).toContain('x'.repeat(510));
+        expect(result).not.toContain('…');
+        expect(result.startsWith('🤔 **思考中**\n\n')).toBe(true);
+    });
+
+    it('formatContentForCard renders short content without truncation', () => {
+        const result = formatContentForCard('line1\nline2', 'thinking');
+
+        expect(result).toBe('🤔 **思考中**\n\nline1\nline2');
+    });
+
+    it('formatContentForCard uses tool emoji and label', () => {
+        const result = formatContentForCard('tool output', 'tool');
+
+        expect(result).toContain('🛠️ **工具执行**');
+        expect(result).toContain('tool output');
     });
 
     it('refreshes aged token before streaming', async () => {
