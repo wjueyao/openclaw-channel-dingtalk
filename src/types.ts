@@ -31,6 +31,10 @@ export interface DingtalkPluginModule {
  * DingTalk channel configuration (extends base OpenClaw config)
  */
 export interface DingTalkConfig extends OpenClawConfig {
+  /** 消息接收模式：stream（WebSocket，默认）或 http（HTTP 回调，支持多实例部署） */
+  mode?: "stream" | "http";
+  /** HTTP 模式监听端口（默认 3000） */
+  httpPort?: number;
   clientId: string;
   clientSecret: string;
   robotCode?: string;
