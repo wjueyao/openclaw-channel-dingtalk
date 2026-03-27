@@ -706,6 +706,7 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
               robotCode: config.robotCode,
               clientId: config.clientId,
               msgId: data.msgId || messageId,
+              inFlightPolicy: "skip",
               hooks: {
                 onMissingMessageId: () => {
                   ctx.log?.warn?.(

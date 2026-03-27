@@ -454,4 +454,58 @@ describe("http-receiver", () => {
       expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("Failed to process message")),
     );
   });
+
+  it("does not swallow in-flight duplicate callback when first async dispatch fails", async () => {
+    let rejectFirstDispatch: (() => void) | undefined;
+    mockedHandle
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectFirstDispatch = () => reject(new Error("transient failure while in-flight"));
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+    const errorLog = vi.fn();
+    server = startHttpReceiver({
+      cfg: {} as any,
+      accountId: "test",
+      dingtalkConfig: { clientId: "id", clientSecret: INGRESS_SECRET } as any,
+      port,
+      log: { error: errorLog } as any,
+    });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const message = {
+      msgId: "m-http-inflight-window",
+      msgtype: "text",
+      text: { content: "inflight retry window" },
+      conversationType: "2",
+      conversationId: "group-1",
+      senderId: "user-1",
+      chatbotUserId: "bot-1",
+      sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=inflight",
+      createAt: Date.now(),
+    };
+
+    const firstResponse = await post(port, "/dingtalk/callback", message, {
+      headers: createSignedHeaders(INGRESS_SECRET),
+    });
+    await vi.waitFor(() => expect(mockedHandle).toHaveBeenCalledTimes(1));
+
+    const secondResponse = await post(port, "/dingtalk/callback", message, {
+      headers: createSignedHeaders(INGRESS_SECRET),
+    });
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(JSON.parse(firstResponse.body)).toEqual({ success: true });
+    expect(JSON.parse(secondResponse.body)).toEqual({ success: true });
+
+    rejectFirstDispatch?.();
+
+    await vi.waitFor(() =>
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("Failed to process message")),
+    );
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(mockedHandle).toHaveBeenCalledTimes(2));
+  });
 });

@@ -4,7 +4,9 @@ import { handleDingTalkMessage } from "./inbound-handler";
 import type { DingTalkConfig, DingTalkInboundMessage, Logger } from "./types";
 
 const INFLIGHT_TTL_MS = 5 * 60 * 1000; // 5 min safety net for hung handlers
-const processingDedupKeys = new Map<string, number>(); // key -> timestamp when acquired
+const processingDedupKeys = new Map<string, { since: number; active: number }>(); // key -> inflight metadata
+
+export type InboundInFlightPolicy = "skip" | "process";
 
 export type InboundDispatchGuardResult =
   | { status: "processed" }
@@ -28,6 +30,7 @@ export async function dispatchInboundMessageWithGuard(params: {
   robotCode?: string;
   clientId?: string;
   msgId?: string;
+  inFlightPolicy?: InboundInFlightPolicy;
   hooks?: InboundDispatchGuardHooks;
 }): Promise<InboundDispatchGuardResult> {
   const {
@@ -40,6 +43,7 @@ export async function dispatchInboundMessageWithGuard(params: {
     robotCode,
     clientId,
     msgId,
+    inFlightPolicy = "skip",
     hooks,
   } = params;
   const robotKey = robotCode || clientId || accountId;
@@ -66,17 +70,23 @@ export async function dispatchInboundMessageWithGuard(params: {
 
   const inflightSince = processingDedupKeys.get(dedupKey);
   if (inflightSince !== undefined) {
-    const heldMs = Date.now() - inflightSince;
+    const heldMs = Date.now() - inflightSince.since;
     if (heldMs > INFLIGHT_TTL_MS) {
       hooks?.onStaleInflightReleased?.({ dedupKey, heldMs, ttlMs: INFLIGHT_TTL_MS });
       processingDedupKeys.delete(dedupKey);
-    } else {
+    } else if (inFlightPolicy === "skip") {
       hooks?.onInflightSkipped?.(dedupKey);
       return { status: "inflight_skipped" };
+    } else {
+      processingDedupKeys.set(dedupKey, {
+        since: inflightSince.since,
+        active: inflightSince.active + 1,
+      });
     }
+  } else {
+    processingDedupKeys.set(dedupKey, { since: Date.now(), active: 1 });
   }
 
-  processingDedupKeys.set(dedupKey, Date.now());
   try {
     await handleDingTalkMessage({
       cfg,
@@ -89,7 +99,14 @@ export async function dispatchInboundMessageWithGuard(params: {
     markMessageProcessed(dedupKey);
     return { status: "processed" };
   } finally {
-    processingDedupKeys.delete(dedupKey);
+    const inflight = processingDedupKeys.get(dedupKey);
+    if (inflight) {
+      if (inflight.active <= 1) {
+        processingDedupKeys.delete(dedupKey);
+      } else {
+        processingDedupKeys.set(dedupKey, { since: inflight.since, active: inflight.active - 1 });
+      }
+    }
   }
 }
 
