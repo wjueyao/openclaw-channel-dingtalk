@@ -421,6 +421,9 @@ openclaw configure --section channels
       "robotCode": "dingxxxxxx",
       "corpId": "dingxxxxxx",
       "agentId": "123456789",
+      "mode": "stream", // 或 "http"
+      // "httpPort": 3000, // HTTP mode 下本地监听端口；多账号同时启用 HTTP mode 时必须各不相同
+      // "webhookPath": "/dingtalk/callback", // HTTP mode 下的回调路径
       "dmPolicy": "open",
       "groupPolicy": "open",
       "displayNameResolution": "disabled", // 或 "all"；启用后可能因重名/旧名称/权限边界限制导致误解析
@@ -458,6 +461,9 @@ openclaw gateway restart
 | `robotCode`             | string   | -            | 机器人代码（用于下载媒体和发送卡片）        |
 | `corpId`                | string   | -            | 企业 ID                                     |
 | `agentId`               | string   | -            | 应用 ID                                     |
+| `mode`                  | string   | `"stream"`   | 消息接收模式：stream/http                   |
+| `httpPort`              | number   | `3000`       | HTTP mode 下的本地监听端口；多账号同时启用时必须各不相同 |
+| `webhookPath`           | string   | `"/dingtalk/callback"` | HTTP mode 下的回调路径             |
 | `dmPolicy`              | string   | `"open"`     | 私聊策略：open/pairing/allowlist            |
 | `groupPolicy`           | string   | `"open"`     | 群聊策略：open/allowlist                    |
 | `allowFrom`             | string[] | `[]`         | 允许的发送者 ID 列表                        |
@@ -480,6 +486,12 @@ openclaw gateway restart
 | `initialReconnectDelay` | number   | `1000`       | 初始重连延迟（毫秒）                        |
 | `maxReconnectDelay`     | number   | `60000`      | 最大重连延迟（毫秒）                        |
 | `reconnectJitter`       | number   | `0.3`        | 重连延迟抖动因子（0-1）                     |
+
+关于 `mode` / `httpPort`：
+
+- `stream`：默认值。适合本地开发、内网环境，以及当前版本需要完整 AI Card 交互/流式能力的场景
+- `http`：适合反向代理、多实例部署和按 `conversationId` 分流的场景
+- 如果同一个 OpenClaw 实例里有多个 DingTalk 账号同时启用 `http`，每个账号都必须配置不同的 `httpPort`
 
 关于 `displayNameResolution`：
 

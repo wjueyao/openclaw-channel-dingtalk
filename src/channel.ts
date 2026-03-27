@@ -56,7 +56,7 @@ import type {
   ResolvedAccount,
   StreamClientFactory,
 } from "./types";
-import { ConnectionState } from "./types";
+import { ConnectionState, listDingTalkAccountIds, resolveDingTalkAccount } from "./types";
 import {
   cleanupOrphanedTempFiles,
   createResolve4FallbackLookup,
@@ -177,6 +177,38 @@ function logInboundCounters(log: any, accountId: string, reason: string): void {
   log?.info?.(
     `[${accountId}] Inbound counters (${reason}): received=${stats.received}, acked=${stats.acked}, processed=${stats.processed}, dedupSkipped=${stats.dedupSkipped}, inflightSkipped=${stats.inflightSkipped}, failed=${stats.failed}, noMessageId=${stats.noMessageId}`,
   );
+}
+
+function resolveHttpListenPort(config: { httpPort?: number } | undefined): number {
+  return config?.httpPort ?? 3000;
+}
+
+function collectHttpPortConflicts(
+  accounts: Array<{
+    accountId: string;
+    configured?: boolean;
+    enabled?: boolean;
+    config?: { mode?: string; httpPort?: number };
+  }>,
+): Array<{ port: number; accountIds: string[] }> {
+  const portToAccounts = new Map<number, string[]>();
+
+  for (const account of accounts) {
+    if (!account.configured || account.enabled === false || account.config?.mode !== "http") {
+      continue;
+    }
+    const port = resolveHttpListenPort(account.config);
+    const existing = portToAccounts.get(port);
+    if (existing) {
+      existing.push(account.accountId);
+    } else {
+      portToAccounts.set(port, [account.accountId]);
+    }
+  }
+
+  return [...portToAccounts.entries()]
+    .filter(([, accountIds]) => accountIds.length > 1)
+    .map(([port, accountIds]) => ({ port, accountIds }));
 }
 
 function readBooleanLikeParam(params: Record<string, unknown>, key: string): boolean | undefined {
@@ -629,6 +661,28 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
 
       // ==================== HTTP callback mode ====================
       if (config.mode === "http") {
+        const currentPort = resolveHttpListenPort(config);
+        const httpPortConflicts = collectHttpPortConflicts(
+          listDingTalkAccountIds(cfg).map((accountId) => {
+            const resolved = resolveDingTalkAccount(cfg, accountId);
+            return {
+              accountId,
+              configured: resolved.configured,
+              enabled: resolved.enabled !== false,
+              config: resolved,
+            };
+          }),
+        );
+        const currentConflict = httpPortConflicts.find(
+          (conflict) =>
+            conflict.port === currentPort && conflict.accountIds.includes(account.accountId),
+        );
+        if (currentConflict) {
+          throw new Error(
+            `HTTP mode port conflict on ${currentPort}: accounts ${currentConflict.accountIds.join(", ")} must use distinct httpPort values`,
+          );
+        }
+
         const httpConfig =
           config.messageType === "card"
             ? (() => {
@@ -642,7 +696,7 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
               })()
             : config;
         const { startHttpReceiver } = await import("./http-receiver");
-        const port = httpConfig.httpPort ?? 3000;
+        const port = resolveHttpListenPort(httpConfig);
         const server = startHttpReceiver({
           cfg,
           accountId: account.accountId,
@@ -1074,7 +1128,7 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
       lastError: null,
     },
     collectStatusIssues: (accounts: any[]) => {
-      return accounts.flatMap((account) => {
+      const issues = accounts.flatMap((account) => {
         if (!account.configured) {
           return [
             {
@@ -1087,6 +1141,18 @@ export const dingtalkPlugin: DingTalkChannelPlugin = {
         }
         return [];
       });
+
+      const httpPortConflicts = collectHttpPortConflicts(accounts);
+      for (const conflict of httpPortConflicts) {
+        issues.push({
+          channel: "dingtalk",
+          kind: "config" as const,
+          accountId: conflict.accountIds[0] ?? null,
+          message: `HTTP mode port conflict on ${conflict.port}: accounts ${conflict.accountIds.join(", ")} must use distinct httpPort values`,
+        });
+      }
+
+      return issues;
     },
     buildChannelSummary: ({ snapshot }: any) => ({
       configured: snapshot?.configured ?? false,

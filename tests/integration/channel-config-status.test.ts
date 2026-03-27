@@ -177,6 +177,31 @@ describe("channel config + status helpers", () => {
     }
   });
 
+  it("reports status issue when multiple http-mode accounts share the same port", () => {
+    const issues = plugin.status.collectStatusIssues([
+      {
+        accountId: "main",
+        configured: true,
+        enabled: true,
+        config: { mode: "http", httpPort: 3000 },
+      },
+      {
+        accountId: "backup",
+        configured: true,
+        enabled: true,
+        config: { mode: "http", httpPort: 3000 },
+      },
+    ] as any);
+
+    expect(issues).toContainEqual(
+      expect.objectContaining({
+        channel: "dingtalk",
+        kind: "config",
+        message: "HTTP mode port conflict on 3000: accounts main, backup must use distinct httpPort values",
+      }),
+    );
+  });
+
   it("lists groups/peers from learned displayName directory", async () => {
     const storePath = createStorePath();
     upsertObservedGroupTarget({

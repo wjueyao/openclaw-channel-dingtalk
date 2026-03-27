@@ -281,4 +281,41 @@ describe('gateway.startAccount lifecycle', () => {
         expect(shared.httpReceiverCloseMock).toHaveBeenCalledTimes(1);
         expect(setStatusCalls.some((s) => s.running === false && s.lastStopAt !== null)).toBe(true);
     });
+
+    it('fails fast when multiple http-mode accounts share the same port', async () => {
+        const { ctx, setStatusCalls } = createStartContext();
+        ctx.cfg = {
+            channels: {
+                dingtalk: {
+                    accounts: {
+                        main: {
+                            clientId: 'ding_id',
+                            clientSecret: 'ding_secret',
+                            mode: 'http',
+                            httpPort: 3000,
+                        },
+                        backup: {
+                            clientId: 'ding_id_backup',
+                            clientSecret: 'ding_secret_backup',
+                            mode: 'http',
+                            httpPort: 3000,
+                        },
+                    },
+                },
+            },
+        };
+        ctx.account.config = {
+            clientId: 'ding_id',
+            clientSecret: 'ding_secret',
+            mode: 'http',
+            httpPort: 3000,
+        } as any;
+
+        await expect(startGatewayAccount(ctx as any)).rejects.toThrow(
+            'HTTP mode port conflict on 3000: accounts main, backup must use distinct httpPort values'
+        );
+
+        expect(shared.startHttpReceiverMock).not.toHaveBeenCalled();
+        expect(setStatusCalls.some((s) => s.lastError === null)).toBe(false);
+    });
 });
