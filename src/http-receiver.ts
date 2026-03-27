@@ -13,9 +13,18 @@
 import http from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
 import { handleDingTalkMessage } from "./inbound-handler";
+import { verifyDingTalkSignature } from "./signature";
 import type { DingTalkConfig, DingTalkInboundMessage, Logger } from "./types";
 
 const DEFAULT_WEBHOOK_PATH = "/dingtalk/callback";
+const MAX_HTTP_BODY_BYTES = 1_048_576;
+
+function readHeaderValue(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) {
+    return String(value[0] ?? "").trim();
+  }
+  return String(value ?? "").trim();
+}
 
 export function startHttpReceiver(params: {
   cfg: OpenClawConfig;
@@ -43,10 +52,47 @@ export function startHttpReceiver(params: {
       return;
     }
 
+    const timestamp = readHeaderValue(req.headers.timestamp);
+    const sign = readHeaderValue(req.headers.sign);
+    if (!timestamp || !sign) {
+      log?.warn?.(`[${accountId}][HTTP] Missing callback signature headers`);
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: false, error: "Missing signature headers" }));
+      return;
+    }
+
+    if (!verifyDingTalkSignature({ timestamp, sign, secret: dingtalkConfig.clientSecret })) {
+      log?.warn?.(`[${accountId}][HTTP] Callback signature verification failed`);
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: false, error: "Invalid signature" }));
+      return;
+    }
+
+    const contentLength = Number(readHeaderValue(req.headers["content-length"]));
+    if (Number.isFinite(contentLength) && contentLength > MAX_HTTP_BODY_BYTES) {
+      log?.warn?.(
+        `[${accountId}][HTTP] Callback payload too large (content-length=${contentLength}, max=${MAX_HTTP_BODY_BYTES})`,
+      );
+      res.writeHead(413, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: false, error: "Payload Too Large" }));
+      return;
+    }
+
     // Read body
     const chunks: Buffer[] = [];
+    let totalBytes = 0;
     for await (const chunk of req) {
-      chunks.push(chunk as Buffer);
+      const chunkBuffer = chunk as Buffer;
+      totalBytes += chunkBuffer.length;
+      if (totalBytes > MAX_HTTP_BODY_BYTES) {
+        log?.warn?.(
+          `[${accountId}][HTTP] Callback payload exceeded limit while streaming (bytes=${totalBytes}, max=${MAX_HTTP_BODY_BYTES})`,
+        );
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: "Payload Too Large" }));
+        return;
+      }
+      chunks.push(chunkBuffer);
     }
     const body = Buffer.concat(chunks).toString("utf-8");
 
@@ -64,19 +110,22 @@ export function startHttpReceiver(params: {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ success: true }));
 
-    // Process message through existing pipeline
-    try {
-      await handleDingTalkMessage({
-        cfg,
-        accountId,
-        data,
-        sessionWebhook: data.sessionWebhook,
-        log,
-        dingtalkConfig,
+    // Keep the callback acknowledgement decoupled from downstream handling.
+    void Promise.resolve()
+      .then(() =>
+        handleDingTalkMessage({
+          cfg,
+          accountId,
+          data,
+          sessionWebhook: data.sessionWebhook,
+          log,
+          dingtalkConfig,
+        }),
+      )
+      .catch((err: any) => {
+        const message = err instanceof Error ? err.message : String(err);
+        log?.error?.(`[${accountId}][HTTP] Failed to process message: ${message}`);
       });
-    } catch (err: any) {
-      log?.error?.(`[${accountId}][HTTP] Failed to process message: ${err.message}`);
-    }
   });
 
   server.listen(port, () => {
