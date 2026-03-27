@@ -4,9 +4,14 @@ import { handleDingTalkMessage } from "./inbound-handler";
 import type { DingTalkConfig, DingTalkInboundMessage, Logger } from "./types";
 
 const INFLIGHT_TTL_MS = 5 * 60 * 1000; // 5 min safety net for hung handlers
-const processingDedupKeys = new Map<string, { since: number; active: number }>(); // key -> inflight metadata
+type InflightEntry = {
+  since: number;
+  completion: Promise<boolean>;
+  settle: (succeeded: boolean) => void;
+};
+const processingDedupKeys = new Map<string, InflightEntry>(); // key -> inflight metadata
 
-export type InboundInFlightPolicy = "skip" | "process";
+export type InboundInFlightPolicy = "skip" | "wait";
 
 export type InboundDispatchGuardResult =
   | { status: "processed" }
@@ -68,43 +73,57 @@ export async function dispatchInboundMessageWithGuard(params: {
     return { status: "dedup_skipped" };
   }
 
-  const inflightSince = processingDedupKeys.get(dedupKey);
-  if (inflightSince !== undefined) {
-    const heldMs = Date.now() - inflightSince.since;
-    if (heldMs > INFLIGHT_TTL_MS) {
-      hooks?.onStaleInflightReleased?.({ dedupKey, heldMs, ttlMs: INFLIGHT_TTL_MS });
-      processingDedupKeys.delete(dedupKey);
-    } else if (inFlightPolicy === "skip") {
-      hooks?.onInflightSkipped?.(dedupKey);
-      return { status: "inflight_skipped" };
-    } else {
-      processingDedupKeys.set(dedupKey, {
-        since: inflightSince.since,
-        active: inflightSince.active + 1,
-      });
-    }
-  } else {
-    processingDedupKeys.set(dedupKey, { since: Date.now(), active: 1 });
-  }
-
-  try {
-    await handleDingTalkMessage({
-      cfg,
-      accountId,
-      data,
-      sessionWebhook,
-      log,
-      dingtalkConfig,
-    });
-    markMessageProcessed(dedupKey);
-    return { status: "processed" };
-  } finally {
+  while (true) {
     const inflight = processingDedupKeys.get(dedupKey);
-    if (inflight) {
-      if (inflight.active <= 1) {
+    if (inflight !== undefined) {
+      const heldMs = Date.now() - inflight.since;
+      if (heldMs > INFLIGHT_TTL_MS) {
+        hooks?.onStaleInflightReleased?.({ dedupKey, heldMs, ttlMs: INFLIGHT_TTL_MS });
         processingDedupKeys.delete(dedupKey);
-      } else {
-        processingDedupKeys.set(dedupKey, { since: inflight.since, active: inflight.active - 1 });
+        continue;
+      }
+
+      if (inFlightPolicy === "skip") {
+        hooks?.onInflightSkipped?.(dedupKey);
+        return { status: "inflight_skipped" };
+      }
+
+      const completedSuccessfully = await inflight.completion;
+      if (completedSuccessfully && isMessageProcessed(dedupKey)) {
+        hooks?.onDedupSkipped?.(dedupKey);
+        return { status: "dedup_skipped" };
+      }
+      continue;
+    }
+
+    let settleInflight!: (succeeded: boolean) => void;
+    const nextInflight: InflightEntry = {
+      since: Date.now(),
+      completion: new Promise<boolean>((resolve) => {
+        settleInflight = resolve;
+      }),
+      settle: (succeeded: boolean) => settleInflight(succeeded),
+    };
+    processingDedupKeys.set(dedupKey, nextInflight);
+
+    try {
+      await handleDingTalkMessage({
+        cfg,
+        accountId,
+        data,
+        sessionWebhook,
+        log,
+        dingtalkConfig,
+      });
+      markMessageProcessed(dedupKey);
+      nextInflight.settle(true);
+      return { status: "processed" };
+    } catch (error) {
+      nextInflight.settle(false);
+      throw error;
+    } finally {
+      if (processingDedupKeys.get(dedupKey) === nextInflight) {
+        processingDedupKeys.delete(dedupKey);
       }
     }
   }

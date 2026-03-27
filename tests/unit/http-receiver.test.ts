@@ -455,35 +455,42 @@ describe("http-receiver", () => {
     );
   });
 
-  it("does not swallow in-flight duplicate callback when first async dispatch fails", async () => {
-    let rejectFirstDispatch: (() => void) | undefined;
-    mockedHandle
-      .mockImplementationOnce(
-        () =>
-          new Promise<void>((_resolve, reject) => {
-            rejectFirstDispatch = () => reject(new Error("transient failure while in-flight"));
-          }),
-      )
-      .mockResolvedValueOnce(undefined);
-    const errorLog = vi.fn();
+  it("waits for in-flight success and skips duplicate without concurrent reentry", async () => {
+    let resolveFirstDispatch: (() => void) | undefined;
+    let activeHandlers = 0;
+    let maxActiveHandlers = 0;
+    mockedHandle.mockImplementation(() => {
+      activeHandlers += 1;
+      maxActiveHandlers = Math.max(maxActiveHandlers, activeHandlers);
+      if (mockedHandle.mock.calls.length === 1) {
+        return new Promise<void>((resolve) => {
+          resolveFirstDispatch = () => {
+            activeHandlers -= 1;
+            resolve();
+          };
+        });
+      }
+      activeHandlers -= 1;
+      return Promise.resolve();
+    });
+
     server = startHttpReceiver({
       cfg: {} as any,
       accountId: "test",
       dingtalkConfig: { clientId: "id", clientSecret: INGRESS_SECRET } as any,
       port,
-      log: { error: errorLog } as any,
     });
     await new Promise((r) => setTimeout(r, 100));
 
     const message = {
-      msgId: "m-http-inflight-window",
+      msgId: "m-http-inflight-success-window",
       msgtype: "text",
-      text: { content: "inflight retry window" },
+      text: { content: "inflight success window" },
       conversationType: "2",
       conversationId: "group-1",
       senderId: "user-1",
       chatbotUserId: "bot-1",
-      sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=inflight",
+      sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=inflight-success",
       createAt: Date.now(),
     };
 
@@ -495,17 +502,82 @@ describe("http-receiver", () => {
     const secondResponse = await post(port, "/dingtalk/callback", message, {
       headers: createSignedHeaders(INGRESS_SECRET),
     });
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(JSON.parse(firstResponse.body)).toEqual({ success: true });
+    expect(JSON.parse(secondResponse.body)).toEqual({ success: true });
+
+    resolveFirstDispatch?.();
+    await vi.waitFor(() => expect(activeHandlers).toBe(0));
+
+    expect(mockedHandle).toHaveBeenCalledTimes(1);
+    expect(maxActiveHandlers).toBe(1);
+  });
+
+  it("waits for in-flight failure and retries sequentially without concurrent reentry", async () => {
+    let rejectFirstDispatch: (() => void) | undefined;
+    let activeHandlers = 0;
+    let maxActiveHandlers = 0;
+    mockedHandle.mockImplementation(() => {
+      activeHandlers += 1;
+      maxActiveHandlers = Math.max(maxActiveHandlers, activeHandlers);
+      if (mockedHandle.mock.calls.length === 1) {
+        return new Promise<void>((_resolve, reject) => {
+          rejectFirstDispatch = () => {
+            activeHandlers -= 1;
+            reject(new Error("transient failure while in-flight"));
+          };
+        });
+      }
+      activeHandlers -= 1;
+      return Promise.resolve();
+    });
+
+    const errorLog = vi.fn();
+    server = startHttpReceiver({
+      cfg: {} as any,
+      accountId: "test",
+      dingtalkConfig: { clientId: "id", clientSecret: INGRESS_SECRET } as any,
+      port,
+      log: { error: errorLog } as any,
+    });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const message = {
+      msgId: "m-http-inflight-failure-window",
+      msgtype: "text",
+      text: { content: "inflight failure window" },
+      conversationType: "2",
+      conversationId: "group-1",
+      senderId: "user-1",
+      chatbotUserId: "bot-1",
+      sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=inflight-failure",
+      createAt: Date.now(),
+    };
+
+    const firstResponse = await post(port, "/dingtalk/callback", message, {
+      headers: createSignedHeaders(INGRESS_SECRET),
+    });
+    await vi.waitFor(() => expect(mockedHandle).toHaveBeenCalledTimes(1));
+
+    const secondResponse = await post(port, "/dingtalk/callback", message, {
+      headers: createSignedHeaders(INGRESS_SECRET),
+    });
+
     expect(firstResponse.status).toBe(200);
     expect(secondResponse.status).toBe(200);
     expect(JSON.parse(firstResponse.body)).toEqual({ success: true });
     expect(JSON.parse(secondResponse.body)).toEqual({ success: true });
 
     rejectFirstDispatch?.();
-
     await vi.waitFor(() =>
       expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("Failed to process message")),
     );
-    expect(errorLog).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(mockedHandle).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(activeHandlers).toBe(0));
+
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    expect(maxActiveHandlers).toBe(1);
   });
 });

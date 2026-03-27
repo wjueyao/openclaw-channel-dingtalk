@@ -133,7 +133,7 @@ export function startHttpReceiver(params: {
           robotCode: dingtalkConfig.robotCode,
           clientId: dingtalkConfig.clientId,
           msgId: data.msgId,
-          inFlightPolicy: "process",
+          inFlightPolicy: "wait",
         }),
       )
       .catch((err: any) => {
