@@ -25,6 +25,24 @@ export type InboundDispatchGuardHooks = {
   onStaleInflightReleased?: (ctx: { dedupKey: string; heldMs: number; ttlMs: number }) => void;
 };
 
+async function waitForInflightCompletion(
+  inflight: InflightEntry,
+  ttlMs: number,
+): Promise<boolean | "timeout"> {
+  const remainingMs = ttlMs - (Date.now() - inflight.since);
+  if (remainingMs <= 0) {
+    return "timeout";
+  }
+
+  return await new Promise<boolean | "timeout">((resolve) => {
+    const timer = setTimeout(() => resolve("timeout"), remainingMs);
+    void inflight.completion.then((result) => {
+      clearTimeout(timer);
+      resolve(result);
+    });
+  });
+}
+
 export async function dispatchInboundMessageWithGuard(params: {
   cfg: OpenClawConfig;
   accountId: string;
@@ -36,6 +54,7 @@ export async function dispatchInboundMessageWithGuard(params: {
   clientId?: string;
   msgId?: string;
   inFlightPolicy?: InboundInFlightPolicy;
+  inFlightTtlMs?: number;
   hooks?: InboundDispatchGuardHooks;
 }): Promise<InboundDispatchGuardResult> {
   const {
@@ -49,6 +68,7 @@ export async function dispatchInboundMessageWithGuard(params: {
     clientId,
     msgId,
     inFlightPolicy = "skip",
+    inFlightTtlMs = INFLIGHT_TTL_MS,
     hooks,
   } = params;
   const robotKey = robotCode || clientId || accountId;
@@ -77,8 +97,8 @@ export async function dispatchInboundMessageWithGuard(params: {
     const inflight = processingDedupKeys.get(dedupKey);
     if (inflight !== undefined) {
       const heldMs = Date.now() - inflight.since;
-      if (heldMs > INFLIGHT_TTL_MS) {
-        hooks?.onStaleInflightReleased?.({ dedupKey, heldMs, ttlMs: INFLIGHT_TTL_MS });
+      if (heldMs > inFlightTtlMs) {
+        hooks?.onStaleInflightReleased?.({ dedupKey, heldMs, ttlMs: inFlightTtlMs });
         processingDedupKeys.delete(dedupKey);
         continue;
       }
@@ -88,7 +108,20 @@ export async function dispatchInboundMessageWithGuard(params: {
         return { status: "inflight_skipped" };
       }
 
-      const completedSuccessfully = await inflight.completion;
+      const completedSuccessfully = await waitForInflightCompletion(inflight, inFlightTtlMs);
+      if (completedSuccessfully === "timeout") {
+        const activeInflight = processingDedupKeys.get(dedupKey);
+        if (activeInflight === inflight) {
+          const refreshedHeldMs = Date.now() - inflight.since;
+          hooks?.onStaleInflightReleased?.({
+            dedupKey,
+            heldMs: refreshedHeldMs,
+            ttlMs: inFlightTtlMs,
+          });
+          processingDedupKeys.delete(dedupKey);
+        }
+        continue;
+      }
       if (completedSuccessfully && isMessageProcessed(dedupKey)) {
         hooks?.onDedupSkipped?.(dedupKey);
         return { status: "dedup_skipped" };

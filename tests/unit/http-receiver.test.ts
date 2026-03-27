@@ -1,6 +1,7 @@
 import http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startHttpReceiver } from "../../src/http-receiver";
+import { dispatchInboundMessageWithGuard } from "../../src/inbound-dispatch-guard";
 import { generateDingTalkSignature } from "../../src/signature";
 
 vi.mock("../../src/inbound-handler", () => ({
@@ -579,5 +580,43 @@ describe("http-receiver", () => {
 
     expect(errorLog).toHaveBeenCalledTimes(1);
     expect(maxActiveHandlers).toBe(1);
+  });
+
+  it("does not leave early waiter hung forever after stale in-flight lock is released", async () => {
+    mockedHandle
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+      .mockResolvedValueOnce(undefined);
+
+    const baseParams = {
+      cfg: {} as any,
+      accountId: "test",
+      data: {
+        msgId: "m-http-stale-waiter",
+        msgtype: "text",
+        text: { content: "stale waiter" },
+        conversationType: "2",
+        conversationId: "group-1",
+        senderId: "user-1",
+        chatbotUserId: "bot-1",
+        sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=stale",
+        createAt: Date.now(),
+      } as any,
+      sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=stale",
+      log: undefined,
+      dingtalkConfig: { clientId: "id", clientSecret: INGRESS_SECRET } as any,
+      robotCode: undefined,
+      clientId: "id",
+      msgId: "m-http-stale-waiter",
+      inFlightPolicy: "wait" as const,
+      inFlightTtlMs: 10,
+    };
+
+    void dispatchInboundMessageWithGuard(baseParams);
+    await vi.waitFor(() => expect(mockedHandle).toHaveBeenCalledTimes(1));
+
+    await expect(dispatchInboundMessageWithGuard(baseParams)).resolves.toEqual({
+      status: "processed",
+    });
+    expect(mockedHandle).toHaveBeenCalledTimes(2);
   });
 });
