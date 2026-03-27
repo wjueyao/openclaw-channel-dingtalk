@@ -40,6 +40,26 @@ describe('types helpers', () => {
         expect(account.configured).toBe(true);
     });
 
+    it('resolves default account HTTP callback config from top-level config', () => {
+        const cfg = {
+            channels: {
+                dingtalk: {
+                    clientId: 'cli_default',
+                    clientSecret: 'sec_default',
+                    mode: 'http',
+                    httpPort: 8088,
+                    webhookPath: '/custom/callback',
+                },
+            },
+        } as any;
+
+        const account = resolveDingTalkAccount(cfg, 'default');
+
+        expect(account.mode).toBe('http');
+        expect(account.httpPort).toBe(8088);
+        expect(account.webhookPath).toBe('/custom/callback');
+    });
+
     it('resolves named account with channel-level defaults and falls back to empty when account missing', () => {
         const cfg = {
             channels: {
@@ -112,6 +132,38 @@ describe('types helpers', () => {
         expect(account.allowFrom).toEqual(['owner-test-id']);
         expect(account.learningAutoApply).toBe(true);
         expect(account.learningNoteTtlMs).toBe(120000);
+    });
+
+    it('resolves named account with inherited HTTP defaults unless overridden', () => {
+        const cfg = {
+            channels: {
+                dingtalk: {
+                    mode: 'http',
+                    httpPort: 3001,
+                    webhookPath: '/dingtalk/callback',
+                    accounts: {
+                        main: { clientId: 'cli_main', clientSecret: 'sec_main' },
+                        backup: {
+                            clientId: 'cli_backup',
+                            clientSecret: 'sec_backup',
+                            httpPort: 9090,
+                            webhookPath: '/backup/callback',
+                        },
+                    },
+                },
+            },
+        } as any;
+
+        const main = resolveDingTalkAccount(cfg, 'main');
+        const backup = resolveDingTalkAccount(cfg, 'backup');
+
+        expect(main.mode).toBe('http');
+        expect(main.httpPort).toBe(3001);
+        expect(main.webhookPath).toBe('/dingtalk/callback');
+
+        expect(backup.mode).toBe('http');
+        expect(backup.httpPort).toBe(9090);
+        expect(backup.webhookPath).toBe('/backup/callback');
     });
 
     it('resolves journalTTLDays from top-level and named account config', () => {

@@ -2,6 +2,43 @@ import { describe, expect, it } from 'vitest';
 import { DingTalkConfigSchema } from '../../src/config-schema';
 
 describe('DingTalkConfigSchema', () => {
+    it('accepts top-level HTTP callback config fields', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            clientId: 'id',
+            clientSecret: 'secret',
+            mode: 'http',
+            httpPort: 8088,
+            webhookPath: '/custom/callback',
+        }) as { mode?: string; httpPort?: number; webhookPath?: string };
+
+        expect(parsed.mode).toBe('http');
+        expect(parsed.httpPort).toBe(8088);
+        expect(parsed.webhookPath).toBe('/custom/callback');
+    });
+
+    it('accepts account-level HTTP callback config overrides', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            mode: 'stream',
+            httpPort: 3000,
+            webhookPath: '/dingtalk/callback',
+            accounts: {
+                main: {
+                    clientId: 'id',
+                    clientSecret: 'secret',
+                    mode: 'http',
+                    httpPort: 8090,
+                    webhookPath: '/main/callback',
+                },
+            },
+        }) as {
+            accounts: Record<string, { mode?: string; httpPort?: number; webhookPath?: string }>;
+        };
+
+        expect(parsed.accounts.main?.mode).toBe('http');
+        expect(parsed.accounts.main?.httpPort).toBe(8090);
+        expect(parsed.accounts.main?.webhookPath).toBe('/main/callback');
+    });
+
     it('applies default journalTTLDays for top-level config', () => {
         const parsed = DingTalkConfigSchema.parse({
             clientId: 'id',

@@ -104,6 +104,12 @@ export interface DingTalkConfig extends OpenClawConfig {
  * Multi-account DingTalk configuration wrapper
  */
 export interface DingTalkChannelConfig {
+  /** 消息接收模式：stream（WebSocket，默认）或 http（HTTP 回调，支持多实例部署） */
+  mode?: "stream" | "http";
+  /** HTTP 模式监听端口（默认 3000） */
+  httpPort?: number;
+  /** HTTP 模式回调路径（默认 /dingtalk/callback） */
+  webhookPath?: string;
   enabled?: boolean;
   clientId: string;
   clientSecret: string;
@@ -763,6 +769,9 @@ export function resolveDingTalkAccount(
   // If default account, return top-level config
   if (id === DEFAULT_ACCOUNT_ID) {
     const config: DingTalkConfig = {
+      mode: dingtalk?.mode,
+      httpPort: dingtalk?.httpPort,
+      webhookPath: dingtalk?.webhookPath,
       clientId: dingtalk?.clientId ?? "",
       clientSecret: dingtalk?.clientSecret ?? "",
       robotCode: dingtalk?.robotCode,

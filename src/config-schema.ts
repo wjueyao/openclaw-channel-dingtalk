@@ -8,6 +8,15 @@ const DingTalkAccountConfigShape = {
   /** Whether this channel is enabled */
   enabled: z.boolean().optional().default(true),
 
+  /** Message receive mode: stream (WebSocket) or http (HTTP callback) */
+  mode: z.enum(["stream", "http"]).optional().default("stream"),
+
+  /** HTTP callback listen port */
+  httpPort: z.number().int().min(1).max(65535).optional().default(3000),
+
+  /** HTTP callback path */
+  webhookPath: z.string().optional().default("/dingtalk/callback"),
+
   /** DingTalk App Key (Client ID) - required for authentication */
   clientId: z.string().optional(),
 
