@@ -105,6 +105,13 @@ describe("http-receiver", () => {
   let destroySpy: ReturnType<typeof vi.spyOn<typeof http.IncomingMessage.prototype, "destroy">>;
   const port = 19876; // use a high port to avoid conflicts
 
+  function expectServerRequestDestroyed(path: string): void {
+    const destroyedServerRequest = destroySpy.mock.instances.some(
+      (instance) => instance.method === "POST" && instance.url === path,
+    );
+    expect(destroyedServerRequest).toBe(true);
+  }
+
   beforeEach(() => {
     mockedHandle.mockReset();
     mockedHandle.mockResolvedValue(undefined);
@@ -235,7 +242,7 @@ describe("http-receiver", () => {
 
     expect(res.status).toBe(401);
     expect(mockedHandle).not.toHaveBeenCalled();
-    expect(destroySpy).toHaveBeenCalled();
+    expectServerRequestDestroyed("/dingtalk/callback");
   });
 
   it("returns 403 and destroys the request when signature is invalid", async () => {
@@ -256,7 +263,7 @@ describe("http-receiver", () => {
 
     expect(res.status).toBe(403);
     expect(mockedHandle).not.toHaveBeenCalled();
-    expect(destroySpy).toHaveBeenCalled();
+    expectServerRequestDestroyed("/dingtalk/callback");
   });
 
   it("returns 403 and destroys the request when timestamp is invalid", async () => {
@@ -277,7 +284,7 @@ describe("http-receiver", () => {
 
     expect(res.status).toBe(403);
     expect(mockedHandle).not.toHaveBeenCalled();
-    expect(destroySpy).toHaveBeenCalled();
+    expectServerRequestDestroyed("/dingtalk/callback");
   });
 
   it("returns 413 and destroys the request when content-length exceeds limit", async () => {
@@ -300,7 +307,7 @@ describe("http-receiver", () => {
 
     expect(res.status).toBe(413);
     expect(mockedHandle).not.toHaveBeenCalled();
-    expect(destroySpy).toHaveBeenCalled();
+    expectServerRequestDestroyed("/dingtalk/callback");
   });
 
   it("returns 413 and destroys the request when chunked body exceeds limit while streaming", async () => {
@@ -326,7 +333,7 @@ describe("http-receiver", () => {
 
     expect(res.status).toBe(413);
     expect(mockedHandle).not.toHaveBeenCalled();
-    expect(destroySpy).toHaveBeenCalled();
+    expectServerRequestDestroyed("/dingtalk/callback");
   });
 
   it("still returns success response even when handleDingTalkMessage throws", async () => {
