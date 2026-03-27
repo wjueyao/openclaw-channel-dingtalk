@@ -9,13 +9,13 @@ const DingTalkAccountConfigShape = {
   enabled: z.boolean().optional().default(true),
 
   /** Message receive mode: stream (WebSocket) or http (HTTP callback) */
-  mode: z.enum(["stream", "http"]).optional().default("stream"),
+  mode: z.enum(["stream", "http"]).optional(),
 
   /** HTTP callback listen port */
-  httpPort: z.number().int().min(1).max(65535).optional().default(3000),
+  httpPort: z.number().int().min(1).max(65535).optional(),
 
   /** HTTP callback path */
-  webhookPath: z.string().optional().default("/dingtalk/callback"),
+  webhookPath: z.string().optional(),
 
   /** DingTalk App Key (Client ID) - required for authentication */
   clientId: z.string().optional(),
@@ -157,6 +157,9 @@ const DingTalkAccountConfigSchema = z.object(DingTalkAccountConfigShape);
  * Mirrors the structure needed for proper control-ui rendering
  */
 export const DingTalkConfigSchema: z.ZodTypeAny = DingTalkAccountConfigSchema.extend({
+  mode: z.enum(["stream", "http"]).optional().default("stream"),
+  httpPort: z.number().int().min(1).max(65535).optional().default(3000),
+  webhookPath: z.string().optional().default("/dingtalk/callback"),
   /** Multi-account configuration */
   accounts: z.record(z.string(), DingTalkAccountConfigSchema.optional()).optional(),
 });

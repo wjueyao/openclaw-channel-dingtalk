@@ -39,6 +39,32 @@ describe('DingTalkConfigSchema', () => {
         expect(parsed.accounts.main?.webhookPath).toBe('/main/callback');
     });
 
+    it('does not inject HTTP defaults into named accounts when omitted', () => {
+        const parsed = DingTalkConfigSchema.parse({
+            mode: 'http',
+            httpPort: 8088,
+            webhookPath: '/channel/callback',
+            accounts: {
+                main: {
+                    clientId: 'id',
+                    clientSecret: 'secret',
+                },
+            },
+        }) as {
+            mode?: string;
+            httpPort?: number;
+            webhookPath?: string;
+            accounts: Record<string, { mode?: string; httpPort?: number; webhookPath?: string }>;
+        };
+
+        expect(parsed.mode).toBe('http');
+        expect(parsed.httpPort).toBe(8088);
+        expect(parsed.webhookPath).toBe('/channel/callback');
+        expect(parsed.accounts.main?.mode).toBeUndefined();
+        expect(parsed.accounts.main?.httpPort).toBeUndefined();
+        expect(parsed.accounts.main?.webhookPath).toBeUndefined();
+    });
+
     it('applies default journalTTLDays for top-level config', () => {
         const parsed = DingTalkConfigSchema.parse({
             clientId: 'id',

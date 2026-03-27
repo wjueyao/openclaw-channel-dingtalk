@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DingTalkConfigSchema } from '../../src/config-schema';
 import { listDingTalkAccountIds, resolveDingTalkAccount } from '../../src/types';
 
 describe('types helpers', () => {
@@ -164,6 +165,28 @@ describe('types helpers', () => {
         expect(backup.mode).toBe('http');
         expect(backup.httpPort).toBe(9090);
         expect(backup.webhookPath).toBe('/backup/callback');
+    });
+
+    it('inherits channel HTTP defaults through parse-to-resolve account chain', () => {
+        const parsedDingtalk = DingTalkConfigSchema.parse({
+            mode: 'http',
+            httpPort: 8088,
+            webhookPath: '/channel/callback',
+            accounts: {
+                main: { clientId: 'cli_main', clientSecret: 'sec_main' },
+            },
+        });
+        const cfg = {
+            channels: {
+                dingtalk: parsedDingtalk,
+            },
+        } as any;
+
+        const account = resolveDingTalkAccount(cfg, 'main');
+
+        expect(account.mode).toBe('http');
+        expect(account.httpPort).toBe(8088);
+        expect(account.webhookPath).toBe('/channel/callback');
     });
 
     it('resolves journalTTLDays from top-level and named account config', () => {
