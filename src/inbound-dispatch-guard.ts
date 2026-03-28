@@ -73,6 +73,7 @@ export async function dispatchInboundMessageWithGuard(params: {
   } = params;
   const robotKey = robotCode || clientId || accountId;
   const effectiveMsgId = (msgId || "").trim();
+  const effectiveSessionWebhook = sessionWebhook ?? data.sessionWebhook ?? "";
   const dedupKey = effectiveMsgId ? `${robotKey}:${effectiveMsgId}` : undefined;
 
   if (!dedupKey) {
@@ -81,7 +82,7 @@ export async function dispatchInboundMessageWithGuard(params: {
       cfg,
       accountId,
       data,
-      sessionWebhook,
+      sessionWebhook: effectiveSessionWebhook,
       log,
       dingtalkConfig,
     });
@@ -149,7 +150,7 @@ export async function dispatchInboundMessageWithGuard(params: {
         cfg,
         accountId,
         data,
-        sessionWebhook,
+        sessionWebhook: effectiveSessionWebhook,
         log,
         dingtalkConfig,
       });
